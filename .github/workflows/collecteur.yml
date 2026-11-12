@@ -14,7 +14,9 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "*/5 * * * *"
+    # Toutes les 5 min, décalé de 3 min : GitHub déconseille les minutes rondes (:00, :05…),
+    # les plus chargées, où les déclenchements sont retardés ou abandonnés.
+    - cron: "3-58/5 * * * *"
 
 # Une seule passe à la fois : une passe déclenchée pendant qu'une autre tourne attend (une seule
 # en attente, les suivantes la remplacent) au lieu de se chevaucher. Le verrou consultatif
