@@ -32,8 +32,10 @@ par variables d'environnement (`COLLECTOR_PLAFOND_JOUR`, `COLLECTOR_PLAFOND_MOIS
 1. Schéma : `SUPABASE_DB_DSN=... python -m app.collecteur ddl --retention` (crée le schéma
    `collecteur` et le job pg_cron de rétention des positions à 120 jours).
 2. Secrets du dépôt : `DATADOCKED_API_KEY`, `SUPABASE_DB_DSN`.
-3. Lancer une passe à la main (onglet Actions, « Run workflow »), puis décommenter le bloc
-   `schedule` du workflow pour la planification toutes les 5 min.
+3. Lancer une passe à la main (onglet Actions, « Run workflow ») ; le workflow `collecteur`
+   est planifié toutes les 5 min.
+4. `keepalive` pousse chaque lundi un battement (`.github/heartbeat`) : sans activité pendant
+   60 jours, GitHub désactive les workflows planifiés d'un dépôt public.
 
 ## Commandes
 

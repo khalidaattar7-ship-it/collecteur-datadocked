@@ -2,11 +2,10 @@ name: collecteur
 
 # Une passe du collecteur temps réel Data Docked (python -m app.collecteur tick --executer).
 #
-# CRON NON ACTIVÉ : la planification toutes les 5 min reste commentée tant que le plan de coût
-# n'est pas validé. Pour l'activer, décommenter le bloc `schedule`.
-# Rappel GitHub : sur un dépôt public, les workflows planifiés sont désactivés après 60 jours
-# sans activité sur le dépôt, et les déclenchements cron peuvent être retardés de plusieurs
-# minutes aux heures chargées.
+# Planifiée toutes les 5 min (activée le 2026-11-12 après contrôle de coût : ~721 crédits/jour
+# projetés, ~21 600/mois). Les déclenchements cron de GitHub peuvent être retardés de
+# plusieurs minutes aux heures chargées. Les workflows planifiés d'un dépôt public sont coupés
+# après 60 jours sans activité : keepalive.yml pousse un battement hebdomadaire.
 on:
   workflow_dispatch:
     inputs:
@@ -14,8 +13,8 @@ on:
         description: "Plafond d'appels location de la passe (vide = aucun)"
         required: false
         default: ""
-  # schedule:
-  #   - cron: "*/5 * * * *"
+  schedule:
+    - cron: "*/5 * * * *"
 
 # Une seule passe à la fois : une passe déclenchée pendant qu'une autre tourne attend (une seule
 # en attente, les suivantes la remplacent) au lieu de se chevaucher. Le verrou consultatif
@@ -32,8 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip

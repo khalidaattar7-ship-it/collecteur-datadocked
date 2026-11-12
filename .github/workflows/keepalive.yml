@@ -1,0 +1,31 @@
+name: keepalive
+
+# GitHub désactive les workflows planifiés d'un dépôt public après 60 jours sans activité.
+# Ce job hebdomadaire pousse un battement horodaté (.github/heartbeat) pour que le cron du
+# collecteur reste actif. Léger : pas de Python, pas de secret, un commit par semaine.
+on:
+  schedule:
+    - cron: "17 4 * * 1"          # lundi 04:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+permissions:
+  contents: write                 # seul ce workflow écrit dans le dépôt (le collecteur : lecture)
+
+jobs:
+  battement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pousser le battement
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/heartbeat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/heartbeat
+          git commit -m "chore: battement keepalive $(cat .github/heartbeat)"
+          git push
