@@ -227,3 +227,24 @@ def test_navire_vers_un_autre_port_hors_perimetre(env):
     f.update(destination="Mohammedia anch Morocco", unlocodeDestination=None, typeSpecific="Bulk Carrier")
     s = suivre(cfg, store, etat, m, f, T0, polys)
     assert s["statut"] == "hors_perimetre" and "autre port" in s["motif"]
+
+
+@avec_base
+def test_statuts_herites_sans_heure_d_entree(env):
+    """Escales passées « anchored » / « berthed » par les anciennes règles, sans heure d'entrée :
+    l'heure manquante est posée (borne haute = 1re observation), sans fausse entrée au port."""
+    cfg, store = env
+    polys = polygones_jeu()
+    for m, statut, pos, ns in (("601", "anchored", RADE, "At Anchor"), ("602", "berthed", QUAI_A, "Moored")):
+        e = store.creer_escale(m, None, statut)
+        store.maj_escale(e["escale_id"], premiere_obs=T0 - timedelta(hours=5), derniere_obs=T0 - timedelta(hours=2))
+        store.commit()
+        etat = Etat()
+        etat.escale(e["escale_id"])["prec"] = {"pr": (T0 - timedelta(hours=2)).isoformat(),
+                                               "appel": (T0 - timedelta(hours=2)).isoformat(), "etat": "quai"}
+        suivre(cfg, store, etat, m, fiche(m, pos, ns, 0.0, T0), T0, polys)
+    r = {x["mmsi"]: x for x in store._q("select * from escales", tous=True)}
+    assert r["601"]["anchorage_entry_at"] == T0 - timedelta(hours=5)
+    assert r["602"]["berth_entry_at"] == T0 - timedelta(hours=5)
+    assert store._q("select count(*) n from evenements where type = 'entree_port'", un=True)["n"] == 0
+    assert {x["confiance"] for x in store._q("select * from evenements", tous=True)} == {"non_observe"}

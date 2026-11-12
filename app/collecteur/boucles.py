@@ -417,7 +417,9 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
         if dans_port and not loc["vu_port"]:
             loc["vu_port"] = True
             fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
-            if fo["observe"]:
+            # Observée seulement si le relevé précédent était CONNU hors du port (classé avec les
+            # polygones) ; un relevé antérieur aux polygones ne dit pas où était le navire.
+            if fo["observe"] and (loc["prec"] or {}).get("dans_port") is False:
                 if escale.get("port_entry_at") is None:
                     maj["port_entry_at"] = pr
                 evt("entree_port", pr, "sweep", fo)
@@ -436,20 +438,26 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                                                    "vu_le": t_appel.isoformat(), "dist_km": round(dist, 1)})
             sortie["motif"] = f"atdUtc {atd:%Y-%m-%d %H:%M} (lastPort {PORT_LOCODE})"
         elif a_quai:
-            if statut != "berthed" and escale.get("berth_entry_at") is None:   # 1er accostage seulement
+            if escale.get("berth_entry_at") is None:                          # 1er accostage seulement
                 fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
-                maj["berth_entry_at"] = pr
+                if statut == "berthed" or not fo["observe"] or loc["prec"].get("etat") == "quai":
+                    # Déjà à quai (statut hérité, 1er relevé, ou relevé précédent à quai) : borne
+                    # haute = 1re observation de l'escale.
+                    fo = {**fo, "observe": False}
+                maj["berth_entry_at"] = pr if fo["observe"] else min(t for t in (escale["premiere_obs"], pr) if t)
                 if fo["observe"]:
                     evt("accostage", pr, "rafale" if loc["phase"] == "mouvement" else "sweep", fo)
                 else:
                     # Déjà à quai au 1er relevé : heure = 1re observation (borne haute), pour le
                     # comptage a_quai ; exclue des statistiques de précision (observe = False).
-                    evt("accostage", pr, "non_observe", fo)
+                    evt("accostage", maj["berth_entry_at"], "non_observe", fo)
                     sortie["motif"] = "déjà à quai au premier relevé : accostage non observé"
             statut, phase = "berthed", "quai"
         elif en_rade:
-            if statut == "approaching" and escale.get("anchorage_entry_at") is None:
+            if statut in ("approaching", "anchored") and escale.get("anchorage_entry_at") is None:
                 fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
+                if statut == "anchored" or loc["prec"] and loc["prec"].get("etat") == "rade":
+                    fo = {**fo, "observe": False}                   # déjà au mouillage avant ce relevé
                 if fo["observe"]:
                     maj["anchorage_entry_at"] = pr
                     evt("mouillage", pr, "sweep", fo)
@@ -457,7 +465,8 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                     # Déjà au mouillage au 1er relevé : l'arrivée constatée (arrival) si elle est
                     # antérieure, sinon la 1re observation (borne haute).
                     arr = escale.get("arrivee_utc")
-                    t_m = arr if arr is not None and arr <= pr else pr
+                    prem = min(t for t in (escale["premiere_obs"], pr) if t)
+                    t_m = arr if arr is not None and arr <= prem else prem
                     maj["anchorage_entry_at"] = t_m
                     evt("mouillage", t_m, "non_observe", {**fo, "source": "arrival" if t_m is arr else "1re observation"})
             elif statut == "berthed":
