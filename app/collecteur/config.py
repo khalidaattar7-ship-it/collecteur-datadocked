@@ -1,0 +1,154 @@
+"""Constantes du collecteur temps réel Data Docked.
+
+Aucun secret ici. Clé API : DATADOCKED_API_KEY ; base : COLLECTOR_DB_DSN ou SUPABASE_DB_DSN
+(variables d'environnement — secrets GitHub en cron ; repli sur un fichier .env en local).
+"""
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+API = "https://datadocked.com/api/vessels_operations"
+ENV_FILE = Path(os.getenv("COLLECTOR_ENV_FILE", Path(__file__).resolve().parents[3] / ".env"))
+
+PORT_LOCODE = "MACAS"
+PORT = (33.6, -7.6167)                 # Casablanca
+SCHEMA = "collecteur"
+DERIVATION_VERSION = "v1_statut_navstatus"
+# Clé du verrou consultatif PostgreSQL (pg_try_advisory_lock) : une seule passe à la fois.
+CLE_VERROU = 0x0C011EC7
+
+# ---- coûts MESURÉS sur le compte (débit = solde avant − après) ---------------------------
+COUT = {
+    "get-vessel-location": 1,
+    "port-calls-by-port": 50,          # par PAGE
+    "get-vessels-by-area": 10,
+    "my-credits": 0,
+}
+# ---- débits annoncés (requêtes / min) -> intervalle minimal entre deux appels -------------
+# Avec un espacement d, une fenêtre de 60 s peut contenir floor(60/d) + 1 requêtes : il faut
+# donc d strictement > 60/limite.
+INTERVALLE_S = {
+    "get-vessel-location": 0.7,        # 100/min
+    "port-calls-by-port": 4.5,         # 15/min
+    "get-vessels-by-area": 1.3,        # 50/min
+    "my-credits": 0.5,
+}
+TIMEOUT_S = {"port-calls-by-port": 120, "default": 60}   # 60 s n'a pas suffi pour port-calls
+# Solde relu après l'appel : laisser au serveur le temps d'imputer le débit.
+ATTENTE_AVANT_SOLDE_APRES_S = float(os.getenv("COLLECTOR_ATTENTE_SOLDE_S", "3.0"))
+TENTATIVES_NON_EMISE = 3               # seules les requêtes JAMAIS parties sont réessayées
+TENTATIVES_QUOTA_SANS_DEBIT = 3        # 429/5xx sans débit constaté : backoff puis nouvel essai
+BACKOFF_S = (15, 30, 60)
+
+
+def _env_int(nom: str, defaut: int) -> int:
+    try:
+        return int(os.getenv(nom, defaut))
+    except (TypeError, ValueError):
+        return defaut
+
+
+@dataclass
+class Plafonds:
+    """Plafonds DURS sur la dépense RÉELLE lue dans le journal (base). En cron, ce sont eux
+    l'autorisation permanente : aucune confirmation humaine par passe."""
+    mois: int = field(default_factory=lambda: _env_int("COLLECTOR_PLAFOND_MOIS", 28_000))
+    jour: int = field(default_factory=lambda: _env_int("COLLECTOR_PLAFOND_JOUR", 950))
+    # Cible de la DÉGRADATION (pas un blocage).
+    cible_mois: int = field(default_factory=lambda: _env_int("COLLECTOR_CIBLE_MOIS", 25_000))
+    # Garde-fou anti-emballement d'UNE passe (plafond de session du client).
+    tick: int = field(default_factory=lambda: _env_int("COLLECTOR_PLAFOND_TICK", 150))
+
+
+# Échelle de DÉGRADATION PRIORISÉE, du plus fin au plus large :
+#   1) élargir d'abord les sweeps in-port (navire stable en rade / à quai), puis la rafale ;
+#   2) puis l'approche LINER au large (> 150 km) ;
+#   3) l'approche FINALE LINER (<= 150 km) en dernier ;
+#   au-delà : blocage dur par le garde-fou (plafonds jour / mois).
+# Rafale bornée à 10-15 min (précision de l'accostage).
+NIVEAUX = (
+    {"stable": 120, "rafale": 12, "loin": 60, "proche": 20},     # 0 : nominal
+    {"stable": 180, "rafale": 12, "loin": 60, "proche": 20},     # 1 : sweeps in-port
+    {"stable": 240, "rafale": 15, "loin": 60, "proche": 20},     # 2 : sweeps + rafale
+    {"stable": 240, "rafale": 15, "loin": 120, "proche": 20},    # 3 : approche au large
+    {"stable": 240, "rafale": 15, "loin": 180, "proche": 20},    # 4
+    {"stable": 240, "rafale": 15, "loin": 180, "proche": 30},    # 5 : approche finale, en dernier
+    {"stable": 240, "rafale": 15, "loin": 180, "proche": 60},    # 6
+)
+
+
+@dataclass
+class Cadences:
+    """Cadences en minutes ; les cadences dégradables sont dans NIVEAUX."""
+    loin_km: float = 150.0             # approche : au-delà = « loin », en deçà = « proche »
+    mouvement_lent: int = 60           # rafale prolongée au-delà de rafale_max_h (dérive au large)
+    confirmation_depart: int = 60      # appel de confirmation (atdUtc, lastPort = MACAS)
+    rafale_max_h: float = 3.0
+    confirmations_max: int = 3
+    niveaux: tuple = NIVEAUX
+
+
+@dataclass
+class Frequences:
+    expected_h: float = 24.0           # port-calls expected : quotidien (candidats LINER)
+    arrival_h: float = 84.0            # port-calls arrival : tous les 3,5 j (page 1 couvre ~4,7 j)
+    decouverte_h: float = 5.0          # get-vessels-by-area 50 km : toutes les 4-6 h
+    rayon_decouverte_km: int = 50
+
+
+@dataclass
+class ReglesSuivi:
+    # Zone portuaire = rayon de la découverte by-area (50 km) : un navire immobile ou en dérive
+    # d'attente dans ce rayon compte comme présent (statut anchored) pour le module attente.
+    rade_km: float = 50.0
+    quai_km: float = 6.0               # Moored à moins de 6 km : à quai
+    sog_mouvement: float = 1.0         # SOG > 1 kn = le navire bouge (déclenche la rafale)
+    depart_km: float = 60.0            # départ de repli : au-delà, après les confirmations
+    perime_h: float = 24.0             # position plus vieille que ça = périmée
+    perime_obs: int = 6                # 6 relevés périmés consécutifs -> abandon
+    vides_obs: int = 12                # 12 réponses sans position consécutives -> abandon
+    approche_max_j: float = 10.0       # suivi d'un « attendu » jamais venu à < 150 km -> abandon
+
+
+@dataclass
+class Config:
+    plafonds: Plafonds = field(default_factory=Plafonds)
+    cadences: Cadences = field(default_factory=Cadences)
+    frequences: Frequences = field(default_factory=Frequences)
+    regles: ReglesSuivi = field(default_factory=ReglesSuivi)
+    schema: str = SCHEMA
+    # Durée max d'une passe : le cron passe toutes les 5 min, une passe doit finir avant.
+    duree_tick_s: int = field(default_factory=lambda: _env_int("COLLECTOR_DUREE_TICK_S", 240))
+    # Copie disque des réponses brutes (en plus d'api_raw) : utile en local seulement.
+    dossier_brut: Optional[Path] = field(
+        default_factory=lambda: Path(os.environ["COLLECTOR_BRUT_DIR"]) if os.getenv("COLLECTOR_BRUT_DIR") else None)
+
+
+def lire_env(*cles: str) -> Optional[str]:
+    for cle in cles:
+        if os.getenv(cle):
+            return os.getenv(cle)
+    if ENV_FILE.exists():
+        for ligne in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            for cle in cles:
+                if ligne.startswith(f"{cle}="):
+                    v = ligne.split("=", 1)[1].strip().strip('"').strip("'")
+                    if v:
+                        return v
+    return None
+
+
+def cle_api() -> str:
+    k = lire_env("DATADOCKED_API_KEY")
+    if not k:
+        raise SystemExit("DATADOCKED_API_KEY absente (variable d'environnement / secret)")
+    return k
+
+
+def dsn() -> str:
+    d = lire_env("COLLECTOR_DB_DSN", "SUPABASE_DB_DSN")
+    if not d:
+        raise SystemExit("COLLECTOR_DB_DSN / SUPABASE_DB_DSN absente : définir la variable d'environnement "
+                         "(secret GitHub en cron). Jamais en dur.")
+    return d
