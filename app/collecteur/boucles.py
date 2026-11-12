@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import PORT, PORT_LOCODE, Config
+from .polygones import Polygones, destination_autre_port, premier_token
 from .types_navires import classer
 
 RE_CASA = re.compile(r"CASA|MA ?CAS\b|MACAS", re.I)
@@ -323,7 +324,7 @@ def _fourchette(prec: Optional[dict], pr: datetime, t_appel: datetime, cadence: 
 
 # ------------------------------------------------------------------------------- suivi
 def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appel: datetime,
-                     niveau: int = 0) -> dict:
+                     niveau: int = 0, polys: Optional[Polygones] = None) -> dict:
     """Une réponse get-vessel-location -> position, navire, phase, statut, événements.
     Retourne {'nouvelle', 'statut', 'phase', 'cadence_min', 'motif', 'evenements'}."""
     r, c = cfg.regles, cfg.cadences
@@ -382,8 +383,22 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
 
     if plus_recente:
         en_zone = dist <= r.rade_km
-        bouge = _bouge(sog, ns, r.sog_mouvement)
-        a_quai = ns == "Moored" and dist <= r.quai_km and not bouge
+        ns1 = premier_token(ns)                     # parité ANP : 1re valeur d'un champ multiple
+        bouge = _bouge(sog, ns1, r.sog_mouvement)
+        if polys is not None and not polys.vide:
+            # CLASSIFICATION POLYGONALE : à quai = Moored ∧ QUAI (ou bassin tant que les quais
+            # ne sont pas tous cartographiés) ; en rade = At Anchor ∧ RADE.
+            zone = polys.zone(la, lo)
+            dans_port = zone in ("quai", "port")
+            a_quai = ns1 == "Moored" and dans_port and not bouge
+            en_rade = ns1 == "At Anchor" and zone == "rade" and not bouge
+        else:
+            # Repli sans polygones (amorçage) : règles de distance.
+            zone = None
+            dans_port = dist <= r.quai_km
+            a_quai = ns1 == "Moored" and dist <= r.quai_km and not bouge
+            en_rade = en_zone and not bouge
+        loc.setdefault("vu_port", False)
         loc["en_zone"] = loc["en_zone"] or en_zone
         loc["min_dist"] = dist if loc["min_dist"] is None else min(loc["min_dist"], dist)
         loc["dernier_dist"] = dist
@@ -394,8 +409,24 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
         atd = parse_dd(f.get("atdUtc"))
         dest = f"{f.get('destination') or ''} {f.get('unlocodeDestination') or ''}"
         cad_avant = loc.get("cadence_min")
-        etat_obs = "quai" if a_quai else ("zone_mouvement" if en_zone and bouge else
+        etat_obs = "quai" if a_quai else ("rade" if en_rade else "zone_mouvement" if en_zone and bouge else
                                           "zone_stable" if en_zone else "hors_zone")
+        etat_obs_port = dans_port
+        prec_port = (loc["prec"] or {}).get("dans_port")
+        # Entrée / sortie du polygone PORT (bassin).
+        if dans_port and not loc["vu_port"]:
+            loc["vu_port"] = True
+            fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
+            if fo["observe"]:
+                if escale.get("port_entry_at") is None:
+                    maj["port_entry_at"] = pr
+                evt("entree_port", pr, "sweep", fo)
+            elif escale.get("arrivee_utc") is not None and escale.get("port_entry_at") is None:
+                maj["port_entry_at"] = escale["arrivee_utc"]
+                evt("entree_port", escale["arrivee_utc"], "arrival", {"observe": False, "source": "arrival"})
+        elif prec_port and not dans_port:
+            store.evenement_remplacer(e_id, "sortie_port", pr, "sweep", _fourchette(loc["prec"], pr, t_appel, cad_avant))
+            sortie["evenements"].append("sortie_port")
 
         if (txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd is not None and debut is not None
                 and atd > debut - timedelta(hours=1)):
@@ -405,32 +436,63 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                                                    "vu_le": t_appel.isoformat(), "dist_km": round(dist, 1)})
             sortie["motif"] = f"atdUtc {atd:%Y-%m-%d %H:%M} (lastPort {PORT_LOCODE})"
         elif a_quai:
-            if statut != "berthed":
+            if statut != "berthed" and escale.get("berth_entry_at") is None:   # 1er accostage seulement
                 fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
+                maj["berth_entry_at"] = pr
                 if fo["observe"]:
-                    maj["berth_entry_at"] = pr
                     evt("accostage", pr, "rafale" if loc["phase"] == "mouvement" else "sweep", fo)
                 else:
+                    # Déjà à quai au 1er relevé : heure = 1re observation (borne haute), pour le
+                    # comptage a_quai ; exclue des statistiques de précision (observe = False).
+                    evt("accostage", pr, "non_observe", fo)
                     sortie["motif"] = "déjà à quai au premier relevé : accostage non observé"
             statut, phase = "berthed", "quai"
-        elif en_zone and not bouge:
-            if statut == "approaching":
+        elif en_rade:
+            if statut == "approaching" and escale.get("anchorage_entry_at") is None:
                 fo = _fourchette(loc["prec"], pr, t_appel, cad_avant)
                 if fo["observe"]:
                     maj["anchorage_entry_at"] = pr
                     evt("mouillage", pr, "sweep", fo)
+                else:
+                    # Déjà au mouillage au 1er relevé : l'arrivée constatée (arrival) si elle est
+                    # antérieure, sinon la 1re observation (borne haute).
+                    arr = escale.get("arrivee_utc")
+                    t_m = arr if arr is not None and arr <= pr else pr
+                    maj["anchorage_entry_at"] = t_m
+                    evt("mouillage", t_m, "non_observe", {**fo, "source": "arrival" if t_m is arr else "1re observation"})
             elif statut == "berthed":
                 # quitte le quai pour la rade sans mouvement observé entre deux relevés
                 maj["berth_exit_at"] = pr
-                evt("sortie_quai", pr, "sweep", _fourchette(loc["prec"], pr, t_appel, cad_avant))
+                store.evenement_remplacer(e_id, "sortie_quai", pr, "sweep",
+                                          _fourchette(loc["prec"], pr, t_appel, cad_avant))
+                sortie["evenements"].append("sortie_quai")
             statut, phase = "anchored", "rade_stable"
+        elif (statut == "approaching" and not loc["vu_port"] and escale.get("anchorage_entry_at") is None
+              and destination_autre_port({"destination": f.get("destination"),
+                                          "unlocode_destination": f.get("unlocodeDestination")})):
+            # Dans le rayon de suivi mais à destination d'un AUTRE port (mouillage de Mohammedia,
+            # ~25 km au NE) et jamais vu dans un polygone de Casablanca : hors périmètre.
+            statut, phase = "hors_perimetre", None
+            sortie["motif"] = f"destination « {f.get('destination')} » (autre port), hors polygones de Casablanca"
+        elif en_zone and not bouge:
+            # Immobile dans la zone mais hors rade (dérive d'attente au large, ou statut AIS
+            # incohérent) : cadence stable, PAS compté en rade.
+            if statut == "berthed" and not a_quai:
+                maj["berth_exit_at"] = pr
+                store.evenement_remplacer(e_id, "sortie_quai", pr, "sweep",
+                                          _fourchette(loc["prec"], pr, t_appel, cad_avant))
+                sortie["evenements"].append("sortie_quai")
+            phase = "rade_stable"
         elif en_zone and bouge:
             if statut == "anchored" and phase != "mouvement":
                 maj["anchorage_exit_at"] = pr
                 evt("sortie_mouillage", pr, "sweep", _fourchette(loc["prec"], pr, t_appel, cad_avant))
             elif statut == "berthed":
+                # Sortie de quai : la DERNIÈRE fait foi (un changement de poste ne coupe pas le séjour).
                 maj["berth_exit_at"] = pr
-                evt("sortie_quai", pr, "sweep", _fourchette(loc["prec"], pr, t_appel, cad_avant))
+                store.evenement_remplacer(e_id, "sortie_quai", pr, "sweep",
+                                          _fourchette(loc["prec"], pr, t_appel, cad_avant))
+                sortie["evenements"].append("sortie_quai")
                 statut = "anchored"                     # sorti du quai, encore en zone
             if phase != "mouvement":
                 loc["phase_depuis"] = t_appel.isoformat()
@@ -469,7 +531,8 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
         if phase != loc["phase"] and phase != "mouvement":
             loc["phase_depuis"] = t_appel.isoformat()
         loc["phase"] = phase
-        loc["prec"] = {"pr": pr.isoformat(), "appel": t_appel.isoformat(), "etat": etat_obs}
+        loc["prec"] = {"pr": pr.isoformat(), "appel": t_appel.isoformat(), "etat": etat_obs,
+                       "dans_port": etat_obs_port, "zone": zone}
     elif loc["prec"] and loc["prec"]["pr"] == pr.isoformat():
         # Même position revue : l'appel atteste que l'état n'avait pas changé à cette heure.
         # La fourchette « appel » part donc du DERNIER appel dans l'ancien état.

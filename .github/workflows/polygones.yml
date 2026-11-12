@@ -1,0 +1,70 @@
+name: polygones
+
+# Tâche PONCTUELLE (déclenchement manuel) : recalibrer / valider les polygones RADE-QUAI-PORT
+# depuis les positions accumulées, ou recalculer la congestion horaire. 0 crédit Data Docked
+# (lecture et écriture Supabase seulement : aucun secret Data Docked n'est fourni).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "calibrer | valider | congestion"
+        required: true
+        default: valider
+        type: choice
+        options: [calibrer, valider, congestion]
+      activer:
+        description: "calibrer : activer la nouvelle version si rade et quai existent"
+        required: false
+        default: false
+        type: boolean
+      depuis:
+        description: "congestion : date de début (AAAA-MM-JJ)"
+        required: false
+        default: ""
+
+# Même groupe que la passe du collecteur : jamais en même temps qu'une passe.
+concurrency:
+  group: collecteur
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  polygones:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Schéma (idempotent)
+        env:
+          SUPABASE_DB_DSN: ${{ secrets.SUPABASE_DB_DSN }}
+        run: python -m app.collecteur ddl
+      - name: Tâche
+        env:
+          SUPABASE_DB_DSN: ${{ secrets.SUPABASE_DB_DSN }}
+          ACTION: ${{ inputs.action }}
+          ACTIVER: ${{ inputs.activer }}
+          DEPUIS: ${{ inputs.depuis }}
+        run: |
+          case "$ACTION" in
+            calibrer)
+              if [ "$ACTIVER" = "true" ]; then
+                python -m app.collecteur polygones calibrer --activer --export polygones.geojson
+              else
+                python -m app.collecteur polygones calibrer --export polygones.geojson
+              fi ;;
+            valider) python -m app.collecteur polygones valider ;;
+            congestion) python -m app.collecteur congestion --depuis "${DEPUIS:-$(date -u -d '7 days ago' +%F)}" ;;
+          esac
+      - name: GeoJSON de la calibration
+        if: inputs.action == 'calibrer'
+        uses: actions/upload-artifact@v7
+        with:
+          name: polygones-geojson
+          path: polygones.geojson

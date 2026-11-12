@@ -20,8 +20,10 @@ from zoneinfo import ZoneInfo
 
 from .boucles import (Etat, cadence_phase, traiter_area, traiter_location, traiter_port_calls, valider_area,
                       valider_location, valider_port_calls)
-from .config import COUT, DERIVATION_VERSION, PORT, PORT_LOCODE, Config
+from . import congestion as cong
+from .config import COUT, PORT, PORT_LOCODE, Config
 from .garde import RefusBudget, maintenant
+from .polygones import Polygones
 
 CASA = ZoneInfo("Africa/Casablanca")
 # Les rafales (accostages, départs) ne sont pas visibles sur une photo de l'instant : provision
@@ -213,6 +215,12 @@ class Scheduler:
         self.log, self.dormir = log, dormir
         self.compteurs = {"appels": 0, "positions_nouvelles": 0, "positions_doublons": 0, "par_statut": {},
                           "evenements": {}}
+        # Polygones actifs (rade / quai / port), chargés une fois par passe ; vides = repli distance.
+        try:
+            self.polys = Polygones.depuis_lignes(store.polygones_actifs())
+        except Exception:  # noqa: BLE001 — table absente (DDL 003 pas encore appliqué) : repli distance
+            store.rollback()
+            self.polys = Polygones()
 
     def _compter(self, res) -> None:
         self.compteurs["appels"] += 1
@@ -282,7 +290,7 @@ class Scheduler:
             self.etat.sauver()
             return
         loc["dernier_appel"] = t.isoformat()
-        s = traiter_location(self.store, self.etat, self.cfg, e, res.corps, t, niveau)
+        s = traiter_location(self.store, self.etat, self.cfg, e, res.corps, t, niveau, self.polys)
         self.compteurs["positions_nouvelles" if s["nouvelle"] else "positions_doublons"] += 1
         for ev in s["evenements"]:
             self.compteurs["evenements"][ev] = self.compteurs["evenements"].get(ev, 0) + 1
@@ -296,17 +304,22 @@ class Scheduler:
         self.etat.sauver()
 
     def congestion(self) -> None:
-        slot = maintenant().astimezone(CASA).replace(minute=0, second=0, microsecond=0)
-        if self.etat.d["horloges"].get("congestion_slot") == slot.isoformat():
-            return
+        """Recalcule les 3 dernières heures de congestion_horaire depuis les événements d'escale
+        (définitions et règles de parité ANP : congestion.py). 0 crédit, idempotent.
+        « bootstrap » les 48 premières heures : les navires déjà présents au démarrage n'ont pas
+        d'heure d'entrée observée (borne haute = 1re observation)."""
+        t = maintenant()
         premiere = self.etat.horloge("premiere_session")
-        qualite = "bootstrap" if premiere is None or maintenant() - premiere < timedelta(hours=24) else "ok"
-        r = self.store.congestion_horaire(slot, qualite, DERIVATION_VERSION)
-        self.store.commit()
-        self.etat.d["horloges"]["congestion_slot"] = slot.isoformat()
-        self.etat.sauver()
-        self.log(f"  congestion {slot:%Y-%m-%d %H:00} (Casablanca) : rade {r['rade']} (LINER {r['rade_liner']}), "
-                 f"à quai {r['a_quai']}, suivis {r['n_total']} [{qualite}]")
+        qualite = "bootstrap" if premiere is None or t - premiere < timedelta(hours=48) else "ok"
+        n = cong.recalculer(self.store, t - timedelta(hours=3), t, qualite)
+        slot = t.astimezone(CASA).replace(minute=0, second=0, microsecond=0)
+        if self.etat.d["horloges"].get("congestion_slot") != slot.isoformat():
+            self.etat.d["horloges"]["congestion_slot"] = slot.isoformat()
+            iv = cong.intervalles(self.store.intervalles_congestion(), t)
+            c = cong.compter(iv, slot)
+            self.log(f"  congestion {slot:%Y-%m-%d %H:00} (Casablanca) : rade {c['rade']} (LINER {c['rade_liner']}), "
+                     f"à quai {c['a_quai']} [{qualite}, {n} créneaux recalculés, polygones "
+                     f"v{self.polys.version or '-'}]")
 
     def tick(self, executer: bool, max_appels: Optional[int] = None) -> dict:
         """UNE passe. executer=False : estimation (lecture seule, 0 appel, 0 écriture)."""

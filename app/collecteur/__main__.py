@@ -8,6 +8,11 @@
   python -m app.collecteur rejouer                   retraite api_raw (idempotence, 0 crédit)
   python -m app.collecteur etat                      dépenses, escales, positions, suivi
   python -m app.collecteur ddl [--retention]         applique le schéma (+ job pg_cron de rétention)
+  python -m app.collecteur polygones calibrer [--activer] [--export F.geojson]
+                                                     dérive RADE / QUAI / PORT des positions en base
+  python -m app.collecteur polygones valider [--version N]   cohérence At Anchor / Moored
+  python -m app.collecteur polygones activer N        active une version de polygones
+  python -m app.collecteur congestion --depuis AAAA-MM-JJ    recalcule congestion_horaire (parité ANP)
 
 MODE CRON : pas de confirmation humaine par passe. L'autorisation permanente, ce sont les
 plafonds (jour COLLECTOR_PLAFOND_JOUR=950, mois COLLECTOR_PLAFOND_MOIS=28000, passe
@@ -19,6 +24,7 @@ Code de sortie : 0 passe faite ou sautée (verrou tenu) ; 2 arrêt de sûreté (
 débit anormal, base injoignable) — visible en échec dans GitHub Actions.
 """
 import argparse
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -27,6 +33,8 @@ import sys
 
 from .boucles import Etat, fiche_location, traiter_area, traiter_location, traiter_port_calls, txt
 from .client import ClientDD
+from . import congestion as cong
+from . import polygones as pg
 from .config import COUT, Config, cle_api, dsn
 from .garde import ArretCollecte, JournalDB, VerrouDB, maintenant
 from .scheduler import PROVISION_RAFALES_JOUR, EtatDB, Scheduler, eligible, plan, projection
@@ -218,6 +226,84 @@ def cmd_etat(args, cfg) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------- polygones
+def _afficher_validation(v: dict) -> None:
+    for nom, r in v.items():
+        taux = f"{100 * r['taux']:.1f} %" if r["taux"] is not None else "-"
+        print(f"  {nom:22} : {r['dedans']}/{r['n']} = {taux}")
+        for o in r["outliers"][:15]:
+            print(f"      hors : {str(o['nom'])[:22]:22} mmsi {o['mmsi']} ({o['lat']:.4f}, {o['lon']:.4f}) "
+                  f"SOG {o['sog']} — à {o['a_km_du_polygone']} km du polygone")
+
+
+def cmd_polygones(args, cfg) -> int:
+    store = Store(dsn(), cfg.schema)
+    positions = store.positions_calibration(args.rayon)
+    if args.action == "calibrer":
+        r = pg.calibrer(positions)
+        version = store.prochaine_version_polygones()
+        print(f"=== Calibration v{version} sur {len(positions)} positions à <= {args.rayon:.0f} km ===")
+        compte = {}
+        for p in r["polygones"]:
+            compte[p["type"]] = compte.get(p["type"], 0) + 1
+            nom = f"{p['type']}_{compte[p['type']]}"
+            print(f"  {nom:8} {p['n_points']:4} positions, {p['n_navires'] or '-'} navires, {p['aire_km2']:7.3f} km², "
+                  f"centre ({p['centre'][0]:.4f}, {p['centre'][1]:.4f}), à {p['dist_seed_km']} km du port, "
+                  f"cap {p['cap_seed']}°")
+            store.inserer_polygone(version, p["type"], nom, pg.geojson(p["km"]), p["n_points"], p["n_navires"],
+                                   p["aire_km2"], r["params"][p["type"]])
+        for j in r["rejets"]:
+            print(f"  REJETÉE ({j['type']}) : {j['n_points']} positions, centre ({j['centre'][0]:.4f}, "
+                  f"{j['centre'][1]:.4f}) — {j['motif']}")
+        manquants = {"rade", "quai", "port"} - set(compte)
+        if manquants:
+            print(f"  ATTENTION : aucun polygone {sorted(manquants)} (données insuffisantes)")
+        store.commit()
+        print("Validation de cette version (en échantillon : les polygones viennent de ces mêmes positions) :")
+        _afficher_validation(pg.valider(positions, pg.Polygones.depuis_lignes(store.polygones_version(version))))
+        if args.export:
+            fc = {"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": l["geojson"],
+                 "properties": {"version": version, "type": l["type"], "nom": l["nom"], "n_points": l["n_points"],
+                                "n_navires": l["n_navires"], "aire_km2": float(l["aire_km2"])}}
+                for l in store.polygones_version(version)]}
+            with open(args.export, "w", encoding="utf-8") as f:
+                json.dump(fc, f, ensure_ascii=False, indent=1)
+            print(f"GeoJSON écrit : {args.export}")
+        if args.activer:
+            if manquants & {"rade", "quai"}:
+                print("NON activée : il manque un polygone rade ou quai.")
+                return 1
+            store.activer_polygones(version)
+            store.commit()
+            print(f"Version v{version} ACTIVE (utilisée par la classification dès la passe suivante).")
+        else:
+            print(f"Version v{version} enregistrée INACTIVE : `polygones activer {version}` pour l'utiliser.")
+        return 0
+    if args.action == "valider":
+        lignes = store.polygones_version(args.version) if args.version else store.polygones_actifs()
+        if not lignes:
+            print("Aucun polygone (actif ou de cette version).")
+            return 1
+        print(f"=== Validation des polygones v{lignes[0]['version']} sur {len(positions)} positions ===")
+        _afficher_validation(pg.valider(positions, pg.Polygones.depuis_lignes(lignes)))
+        return 0
+    if args.action == "activer":
+        n = store.activer_polygones(args.version)
+        store.commit()
+        print(f"v{args.version} active ({n} polygone(s))." if n else f"Aucun polygone en version {args.version}.")
+        return 0 if n else 1
+    return 1
+
+
+def cmd_congestion(args, cfg) -> int:
+    store = Store(dsn(), cfg.schema)
+    debut = datetime.fromisoformat(args.depuis).replace(tzinfo=timezone.utc)
+    n = cong.recalculer(store, debut, qualite=args.qualite)
+    print(f"congestion_horaire recalculée : {n} créneaux depuis {args.depuis} (version {cong.VERSION})")
+    return 0
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -232,7 +318,21 @@ def main() -> None:
     sub.add_parser("precision").set_defaults(f=cmd_precision)
     sub.add_parser("rejouer").set_defaults(f=cmd_rejouer)
     sub.add_parser("etat").set_defaults(f=cmd_etat)
+    pp = sub.add_parser("polygones")
+    pp.add_argument("action", choices=("calibrer", "valider", "activer"))
+    pp.add_argument("version", type=int, nargs="?")
+    pp.add_argument("--version", dest="version_opt", type=int)
+    pp.add_argument("--activer", action="store_true")
+    pp.add_argument("--export")
+    pp.add_argument("--rayon", type=float, default=60.0)
+    pp.set_defaults(f=cmd_polygones)
+    cg = sub.add_parser("congestion")
+    cg.add_argument("--depuis", required=True)
+    cg.add_argument("--qualite", default="recalcul")
+    cg.set_defaults(f=cmd_congestion)
     a = ap.parse_args()
+    if getattr(a, "version_opt", None) is not None:
+        a.version = a.version_opt
     sys.exit(a.f(a, Config(schema=a.schema)))
 
 

@@ -37,6 +37,21 @@ par variables d'environnement (`COLLECTOR_PLAFOND_JOUR`, `COLLECTOR_PLAFOND_MOIS
 4. `keepalive` pousse chaque lundi un battement (`.github/heartbeat`) : sans activité pendant
    60 jours, GitHub désactive les workflows planifiés d'un dépôt public.
 
+## Polygones et congestion
+
+Les positions sont classées par polygones dérivés des données (`app/collecteur/polygones.py`) :
+RADE (grappes de positions « At Anchor » déclarant Casablanca), QUAI (grappes « Moored »),
+PORT (bassin). À quai = Moored dans un quai ou le bassin ; en rade = At Anchor dans la rade.
+Les polygones sont versionnés en base (table `polygones`, une version active) et exportés en
+GeoJSON (`db/collecteur/polygones/`). Recalibrer quand les positions s'accumulent :
+`python -m app.collecteur polygones calibrer [--activer]`, ou le workflow manuel `polygones`.
+
+`congestion_horaire` (rade, rade LINER, à quai) est recalculée à chaque passe depuis les
+événements d'escale, avec les définitions du compteur historique de la capitainerie : rade =
+[mouillage, accostage[ (accostage direct jamais en rade), à quai = [1er accostage, dernière
+sortie de quai[ plafonné à 60 jours, 1re valeur d'un champ multiple, années hors [2000, 2030]
+ignorées, heure locale de Casablanca.
+
 ## Commandes
 
 | Commande | Effet |
@@ -47,3 +62,6 @@ par variables d'environnement (`COLLECTOR_PLAFOND_JOUR`, `COLLECTOR_PLAFOND_MOIS
 | `precision` | précision des heures d'accostage (médiane, p90) |
 | `rejouer` | retraite les réponses archivées (contrôle d'idempotence) |
 | `etat` | dépense, escales, positions, échéances |
+| `polygones calibrer [--activer] [--export F]` | dérive rade / quai / port des positions en base |
+| `polygones valider [--version N]` | part des At Anchor en rade et des Moored à quai |
+| `congestion --depuis AAAA-MM-JJ` | recalcule la congestion horaire |

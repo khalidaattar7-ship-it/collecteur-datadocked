@@ -18,6 +18,7 @@ DDL_DIR = next((r / "db" / "collecteur" for r in Path(__file__).resolve().parent
                 if (r / "db" / "collecteur" / "001_collecteur.sql").exists()),
                Path(__file__).resolve().parents[2] / "db" / "collecteur")
 DDL = DDL_DIR / "001_collecteur.sql"
+DDL_CORPS = ("001_collecteur.sql", "003_polygones.sql")      # dans l'ordre
 DDL_RETENTION = DDL_DIR / "002_retention_pg_cron.sql"
 STATUTS_OUVERTS = ("approaching", "anchored", "berthed")
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -36,13 +37,13 @@ class Store:
 
     # ------------------------------------------------------------------ DDL
     def appliquer_ddl(self, retention: bool = False) -> None:
-        """Applique 001_collecteur.sql (idempotent) dans le schéma de la connexion (le CORPS,
-        après « -- @corps ») ; avec `retention`, aussi le job pg_cron (002)."""
-        corps = DDL.read_text(encoding="utf-8").split("-- @corps", 1)[1]
+        """Applique les DDL (idempotents) dans le schéma de la connexion (le CORPS de chaque
+        fichier, après le marqueur) ; avec `retention`, aussi le job pg_cron (002)."""
         with self.cx.cursor() as c:
             c.execute(f"create schema if not exists {self.schema}")
             c.execute(f"set search_path to {self.schema}, public")
-            c.execute(corps)
+            for nom in DDL_CORPS:
+                c.execute((DDL_DIR / nom).read_text(encoding="utf-8").split("-- @corps", 1)[1])
             if retention:
                 c.execute(DDL_RETENTION.read_text(encoding="utf-8"))
                 c.execute(f"set search_path to {self.schema}, public")
@@ -247,6 +248,53 @@ class Store:
               qualite = excluded.qualite, derivation_version = excluded.derivation_version
         """, (slot, r["rade"], r["rade_liner"], r["a_quai"], r["n_total"], qualite, version))
         return dict(r)
+
+    # ------------------------------------------------------------------ polygones
+    def polygones_actifs(self) -> list[dict]:
+        return self._q("select * from polygones where actif order by type, id", tous=True)
+
+    def prochaine_version_polygones(self) -> int:
+        return self._q("select coalesce(max(version), 0) + 1 as v from polygones", un=True)["v"]
+
+    def inserer_polygone(self, version: int, type_: str, nom: str, gj: dict, n_points, n_navires, aire,
+                         params: dict) -> None:
+        self._q("insert into polygones (version, type, nom, geojson, n_points, n_navires, aire_km2, params) "
+                "values (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (version, type_, nom, json.dumps(gj), n_points, n_navires, aire, json.dumps(params)))
+
+    def activer_polygones(self, version: int) -> int:
+        self._q("update polygones set actif = false where actif")
+        return self._q("update polygones set actif = true where version = %s", (version,))
+
+    def polygones_version(self, version: int) -> list[dict]:
+        return self._q("select * from polygones where version = %s order by type, id", (version,), tous=True)
+
+    def positions_calibration(self, rayon_km: float = 60.0) -> list[dict]:
+        return self._q("""
+            select p.mmsi, v.name, p.lat, p.lon, p.sog, p.nav_status, p.distance_to_port_km, p.position_received,
+                   p.destination, p.unlocode_destination
+            from positions p left join vessels v using (mmsi)
+            where p.distance_to_port_km <= %s and p.lat is not null and p.lon is not null
+        """, (rayon_km,), tous=True)
+
+    # ------------------------------------------------------------------ congestion (parité ANP)
+    def intervalles_congestion(self) -> list[dict]:
+        return self._q("""
+            select e.escale_id, v.categorie, e.anchorage_entry_at, e.berth_entry_at, e.berth_exit_at,
+                   e.departure_at, e.statut
+            from escales e left join vessels v using (mmsi)
+            where e.anchorage_entry_at is not null or e.berth_entry_at is not null
+        """, tous=True)
+
+    def ecrire_congestion(self, slot, rade, rade_liner, a_quai, n_total, qualite, version) -> None:
+        self._q("""
+            insert into congestion_horaire (hour_slot_casa, captured_at, rade, rade_liner, a_quai, n_total, qualite,
+                                            derivation_version)
+            values (%s, now(), %s, %s, %s, %s, %s, %s)
+            on conflict (hour_slot_casa) do update set captured_at = excluded.captured_at, rade = excluded.rade,
+              rade_liner = excluded.rade_liner, a_quai = excluded.a_quai, n_total = excluded.n_total,
+              qualite = excluded.qualite, derivation_version = excluded.derivation_version
+        """, (slot, rade, rade_liner, a_quai, n_total, qualite, version))
 
     def compter(self, table: str) -> int:
         assert _IDENT.match(table)
