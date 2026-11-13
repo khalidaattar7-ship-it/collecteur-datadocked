@@ -13,6 +13,8 @@
   python -m app.collecteur polygones valider [--version N]   cohérence At Anchor / Moored
   python -m app.collecteur polygones activer N        active une version de polygones
   python -m app.collecteur congestion --depuis AAAA-MM-JJ    recalcule congestion_horaire (parité ANP)
+  python -m app.collecteur couverture [--depuis AAAA-MM-JJ]  fraîcheur des positions par tranche de distance
+                                                     (escales du diagnostic de couverture, 0 crédit)
 
 MODE CRON : pas de confirmation humaine par passe. L'autorisation permanente, ce sont les
 plafonds (jour COLLECTOR_PLAFOND_JOUR=950, mois COLLECTOR_PLAFOND_MOIS=28000, passe
@@ -30,6 +32,7 @@ import math
 import os
 import statistics
 import sys
+from collections import Counter
 
 from .boucles import Etat, fiche_location, traiter_area, traiter_location, traiter_port_calls, txt
 from .client import ClientDD
@@ -296,6 +299,66 @@ def cmd_polygones(args, cfg) -> int:
     return 1
 
 
+TRANCHES_KM = ((0, 50), (50, 150), (150, 300), (300, 600), (600, 1e9))
+
+
+def cmd_couverture(args, cfg) -> int:
+    """Diagnostic de couverture terrestre : pour chaque APPEL get-vessel-location des escales
+    marquées (ou des MMSI donnés), distance au port, âge de la position (réception de la réponse
+    − positionReceived) et « vraie nouvelle position » (positionReceived différent de l'appel
+    précédent du même navire) ; agrégé par tranche de distance. Lecture seule, 0 crédit."""
+    from .boucles import fiche_location, haversine_km, num, parse_dd
+    from .config import PORT
+    store = Store(dsn(), cfg.schema)
+    if args.mmsi:
+        mmsis = args.mmsi.split(",")
+    else:
+        mmsis = [r["mmsi"] for r in store._q(
+            "select e.mmsi from suivi s join escales e using (escale_id) "
+            "where s.etat ? 'diag_debut'", tous=True)]
+    if not mmsis:
+        print("Aucune escale marquée pour le diagnostic (suivi.etat « diag_debut »).")
+        return 1
+    rows = store._q("""
+        select captured_at, params->>'imo_or_mmsi' mmsi, corps from api_raw
+        where endpoint = 'get-vessel-location' and statut_appel = 'recue'
+          and params->>'imo_or_mmsi' = any(%s) and captured_at >= %s
+        order by params->>'imo_or_mmsi', captured_at""", (mmsis, args.depuis or "2000-01-01"), tous=True)
+    appels, prec = [], {}
+    for r in rows:
+        f = fiche_location(r["corps"]) or {}
+        la, lo, pr = num(f.get("latitude")), num(f.get("longitude")), parse_dd(f.get("positionReceived"))
+        if la is None or lo is None or pr is None:
+            appels.append({"mmsi": r["mmsi"], "dist": None, "age": None, "nouvelle": False, "vide": True, "src": None,
+                           "nom": f.get("name")})
+            continue
+        nouvelle = prec.get(r["mmsi"]) != pr
+        prec[r["mmsi"]] = pr
+        appels.append({"mmsi": r["mmsi"], "nom": f.get("name"), "dist": haversine_km(la, lo, *PORT), "vide": False,
+                       "age": (r["captured_at"] - pr).total_seconds() / 60, "nouvelle": nouvelle,
+                       "src": f.get("dataSource")})
+    print(f"Diagnostic de couverture : {len(appels)} appels, navires : "
+          + ", ".join(sorted({f"{a['nom']} ({a['mmsi']})" for a in appels if a['nom']})))
+    print(f"{'tranche':>12} {'appels':>7} {'vides':>6} {'nouvelles':>10} {'taux':>6} {'âge méd.':>9} {'âge p90':>8} "
+          f"{'âge max':>8}  sources")
+    for lo_, hi in TRANCHES_KM:
+        t = [a for a in appels if a["dist"] is not None and lo_ <= a["dist"] < hi]
+        vides = [a for a in appels if a["vide"]] if lo_ == 0 else []
+        if not t:
+            print(f"{f'{lo_:.0f}-{hi:.0f}' if hi < 1e9 else f'{lo_:.0f}+':>12} {0:>7}")
+            continue
+        ages = sorted(a["age"] for a in t)
+        q = lambda p: ages[min(len(ages) - 1, math.ceil(p * len(ages)) - 1)]
+        nv = sum(a["nouvelle"] for a in t)
+        src = ", ".join(f"{k} {v}" for k, v in sorted(Counter(a["src"] for a in t).items(), key=lambda x: -x[1]))
+        print(f"{f'{lo_:.0f}-{hi:.0f}' if hi < 1e9 else f'{lo_:.0f}+':>12} {len(t):>7} {len(vides):>6} {nv:>10} "
+              f"{100 * nv / len(t):>5.0f}% {statistics.median(ages):>8.1f} {q(0.9):>8.1f} {ages[-1]:>8.1f}  {src}")
+    print("(âge en minutes = réception de la réponse − positionReceived ; « nouvelle » = positionReceived différent "
+          "de l'appel précédent du navire ; à cadence 15 min, un taux proche de 100 % et un âge < 15 min = "
+          "couverture continue)")
+    return 0
+
+
 def cmd_congestion(args, cfg) -> int:
     store = Store(dsn(), cfg.schema)
     debut = datetime.fromisoformat(args.depuis).replace(tzinfo=timezone.utc)
@@ -326,6 +389,10 @@ def main() -> None:
     pp.add_argument("--export")
     pp.add_argument("--rayon", type=float, default=60.0)
     pp.set_defaults(f=cmd_polygones)
+    cv = sub.add_parser("couverture")
+    cv.add_argument("--depuis")
+    cv.add_argument("--mmsi", help="liste séparée par des virgules (défaut : escales marquées diag)")
+    cv.set_defaults(f=cmd_couverture)
     cg = sub.add_parser("congestion")
     cg.add_argument("--depuis", required=True)
     cg.add_argument("--qualite", default="recalcul")

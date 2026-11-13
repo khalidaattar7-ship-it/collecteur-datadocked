@@ -47,6 +47,9 @@ jobs:
           DATADOCKED_API_KEY: ${{ secrets.DATADOCKED_API_KEY }}
           SUPABASE_DB_DSN: ${{ secrets.SUPABASE_DB_DSN }}
           MAX_APPELS: ${{ inputs.max_appels }}
+          # Plafond jour : variable de dépôt (Settings -> Variables), 950 par défaut. Relevé
+          # temporairement pendant un diagnostic, sans toucher au code.
+          COLLECTOR_PLAFOND_JOUR: ${{ vars.COLLECTOR_PLAFOND_JOUR || '950' }}
         run: |
           if [ -n "$MAX_APPELS" ]; then
             python -m app.collecteur tick --executer --max-appels "$MAX_APPELS"

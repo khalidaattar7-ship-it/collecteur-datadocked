@@ -288,6 +288,24 @@ def traiter_area(store, corps: dict, t_appel: Optional[datetime] = None) -> dict
 
 
 # ------------------------------------------------------------------------------- cadences
+# DIAGNOSTIC DE COUVERTURE : une escale marquée (suivi.etat « diag_cadence_min » +
+# « diag_jusqu_au ») est interrogée à cadence CONSTANTE quelle que soit la distance ou la phase,
+# hors dégradation, jusqu'à l'accostage / au départ ou l'échéance. Sert à caractériser la
+# fraîcheur des positions terrestres en fonction de la distance (DECISIONS.md).
+STATUTS_FIN_DIAG = ("berthed", "departed", "abandoned", "hors_perimetre")
+
+
+def cadence_diagnostic(loc: dict, t: datetime, statut: Optional[str] = None) -> Optional[int]:
+    cad, fin = loc.get("diag_cadence_min"), loc.get("diag_jusqu_au")
+    if not cad:
+        return None
+    if (fin and t >= datetime.fromisoformat(fin)) or statut in STATUTS_FIN_DIAG:
+        loc["diag_termine"] = {"le": t.isoformat(), "motif": statut or "échéance"}
+        loc.pop("diag_cadence_min", None)
+        return None
+    return int(cad)
+
+
 def cadence_phase(cfg: Config, phase: Optional[str], dist: Optional[float], niveau: int,
                   phase_depuis: Optional[datetime] = None, t: Optional[datetime] = None) -> int:
     c = cfg.cadences
@@ -341,7 +359,7 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
         if loc["vides"] >= r.vides_obs:
             store.maj_escale(e_id, statut="abandoned")
             sortie.update(statut="abandoned", motif=f"{loc['vides']} réponses sans position")
-        cad = loc.get("cadence_min") or c.niveaux[niveau]["loin"]
+        cad = cadence_diagnostic(loc, t_appel) or loc.get("cadence_min") or c.niveaux[niveau]["loin"]
         loc["cadence_min"] = cad
         loc["prochain_appel"] = (t_appel + timedelta(minutes=cad)).isoformat()
         store.commit()
@@ -555,7 +573,7 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
     store.commit()
 
     depuis = datetime.fromisoformat(loc["phase_depuis"]) if loc.get("phase_depuis") else None
-    cad = cadence_phase(cfg, loc["phase"], loc["dernier_dist"], niveau, depuis, t_appel)
+    cad = cadence_diagnostic(loc, t_appel, statut) or cadence_phase(cfg, loc["phase"], loc["dernier_dist"], niveau, depuis, t_appel)
     loc["cadence_min"] = cad
     loc["prochain_appel"] = (t_appel + timedelta(minutes=cad)).isoformat()
     sortie.update(statut=statut, phase=loc["phase"], cadence_min=cad, dist_km=dist, nav_status=ns, sog=sog,

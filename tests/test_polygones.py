@@ -248,3 +248,23 @@ def test_statuts_herites_sans_heure_d_entree(env):
     assert r["602"]["berth_entry_at"] == T0 - timedelta(hours=5)
     assert store._q("select count(*) n from evenements where type = 'entree_port'", un=True)["n"] == 0
     assert {x["confiance"] for x in store._q("select * from evenements", tous=True)} == {"non_observe"}
+
+
+@avec_base
+def test_cadence_diagnostic_constante_puis_levee(env):
+    """Escale marquée : 15 min à toute distance (au large comme en approche finale), levée à l'accostage."""
+    cfg, store = env
+    polys, etat, m = polygones_jeu(), Etat(), "701"
+    e = store.creer_escale(m, None)
+    store.commit()
+    loc = etat.escale(e["escale_id"])
+    loc.update(diag_cadence_min=15, diag_debut=T0.isoformat(), diag_jusqu_au=(T0 + timedelta(days=3)).isoformat())
+    for i, (pos, ns, sog) in enumerate((((36.5, -9.5), "Underway using Engine", 14), ((34.4, -7.9), "Underway using Engine", 12),
+                                        (RADE, "At Anchor", 0.1))):
+        t = T0 + timedelta(minutes=15 * i)
+        s = suivre(cfg, store, etat, m, fiche(m, pos, ns, sog, t), t, polys)
+        assert s["cadence_min"] == 15, (i, s)
+    t = T0 + timedelta(minutes=60)
+    s = suivre(cfg, store, etat, m, fiche(m, QUAI_A, "Moored", 0.0, t), t, polys)
+    assert s["statut"] == "berthed" and s["cadence_min"] != 15 and "diag_cadence_min" not in loc
+    assert loc["diag_termine"]["motif"] == "berthed"

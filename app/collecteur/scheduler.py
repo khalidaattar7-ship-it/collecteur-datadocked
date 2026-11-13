@@ -174,7 +174,8 @@ def selectionner(escales: list[dict], etat: Etat, max_navires: Optional[int]) ->
         loc = etat.d["escales"].get(str(e["escale_id"]), {})
         phase = loc.get("phase")
         dist = e.get("dern_dist") if e.get("dern_dist") is not None else 1e6
-        rang = (0 if phase == "mouvement" else
+        rang = (-1 if loc.get("diag_cadence_min") else       # diagnostic de couverture : toujours servi
+                0 if phase == "mouvement" else
                 1 if phase == "approche" and dist <= 150 else
                 2 if phase in ("quai", "rade_stable", "hors_zone") else
                 3 if phase == "approche" else 4)
@@ -284,7 +285,7 @@ class Scheduler:
         if not res.ok:
             loc["dernier_appel"] = t.isoformat()
             # Pas de nouvel essai immédiat : le navire sera réinterrogé à sa cadence normale.
-            cad = loc.get("cadence_min") or self.cfg.cadences.niveaux[niveau]["loin"]
+            cad = loc.get("diag_cadence_min") or loc.get("cadence_min") or self.cfg.cadences.niveaux[niveau]["loin"]
             loc["prochain_appel"] = (t + timedelta(minutes=cad)).isoformat()
             self.log(f"  {e.get('name') or e['mmsi']} : {res.statut} ({res.http} {res.erreur}), débit {res.depense}")
             self.etat.sauver()
