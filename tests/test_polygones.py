@@ -268,3 +268,28 @@ def test_cadence_diagnostic_constante_puis_levee(env):
     s = suivre(cfg, store, etat, m, fiche(m, QUAI_A, "Moored", 0.0, t), t, polys)
     assert s["statut"] == "berthed" and s["cadence_min"] != 15 and "diag_cadence_min" not in loc
     assert loc["diag_termine"]["motif"] == "berthed"
+
+
+@avec_base
+def test_reponse_sans_destination_n_abandonne_pas(env):
+    """Réponse sans champs statiques au large : l'approche continue ; une destination explicite vers
+    un autre port n'abandonne qu'à la 2e réponse consécutive."""
+    cfg, store = env
+    polys, etat, m = polygones_jeu(), Etat(), "702"
+    store.creer_escale(m, None)
+    store.commit()
+    loin = (36.27, -3.60)                                   # ~600 km, Alboran
+    f = fiche(m, loin, "Underway using Engine", 12.6, T0)
+    s = suivre(cfg, store, etat, m, f, T0, polys)
+    assert s["statut"] == "approaching"
+    t = T0 + timedelta(minutes=20)
+    vide = {**fiche(m, (36.26, -3.68), "Underway using Engine", 12.6, t), "destination": None,
+            "unlocodeDestination": None}
+    s = suivre(cfg, store, etat, m, vide, t, polys)
+    assert s["statut"] == "approaching", s
+    for i, attendu in ((2, "approaching"), (3, "abandoned")):
+        t = T0 + timedelta(minutes=20 * i)
+        autre = {**fiche(m, (36.25, -3.70 - 0.05 * i), "Underway using Engine", 12.6, t), "destination": "Valencia",
+                 "unlocodeDestination": "ESVLC"}
+        s = suivre(cfg, store, etat, m, autre, t, polys)
+        assert s["statut"] == attendu, (i, s)

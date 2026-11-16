@@ -109,6 +109,7 @@ class ReglesSuivi:
     perime_obs: int = 6                # 6 relevés périmés consécutifs -> abandon
     vides_obs: int = 12                # 12 réponses sans position consécutives -> abandon
     approche_max_j: float = 10.0       # suivi d'un « attendu » jamais venu à < 150 km -> abandon
+    dest_autre_obs: int = 2            # destination explicite vers un autre port, N fois de suite -> abandon
 
 
 @dataclass

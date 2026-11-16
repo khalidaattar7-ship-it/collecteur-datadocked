@@ -494,7 +494,7 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                                           _fourchette(loc["prec"], pr, t_appel, cad_avant))
                 sortie["evenements"].append("sortie_quai")
             statut, phase = "anchored", "rade_stable"
-        elif (statut == "approaching" and not loc["vu_port"] and escale.get("anchorage_entry_at") is None
+        elif (en_zone and statut == "approaching" and not loc["vu_port"] and escale.get("anchorage_entry_at") is None
               and destination_autre_port({"destination": f.get("destination"),
                                           "unlocode_destination": f.get("unlocodeDestination")})):
             # Dans le rayon de suivi mais à destination d'un AUTRE port (mouillage de Mohammedia,
@@ -548,9 +548,20 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
             sortie["motif"] = f"non-LINER hors zone ({dist:.0f} km) : pas de suivi d'approche"
         else:
             phase = "approche"
-            if dist > c.loin_km and not RE_CASA.search(dest):
+            # Abandon sur destination : seulement une destination EXPLICITE vers un autre port, vue
+            # sur `dest_autre_obs` réponses consécutives. Une réponse sans champs statiques
+            # (destination / lastPort / atdUtc / etaUtc vides, cas observé en mer) ne dit rien de
+            # la destination et ne compte pas : elle n'abandonne plus une approche (AKNOUL, 13/11).
+            autre = destination_autre_port({"destination": f.get("destination"),
+                                            "unlocode_destination": f.get("unlocodeDestination")})
+            if autre:
+                loc["dest_autre"] = loc.get("dest_autre", 0) + 1
+            elif RE_CASA.search(dest):
+                loc["dest_autre"] = 0
+            if dist > c.loin_km and loc.get("dest_autre", 0) >= r.dest_autre_obs:
                 statut, phase = "abandoned", None
-                sortie["motif"] = f"destination « {dest.strip()} » au large ({dist:.0f} km)"
+                sortie["motif"] = (f"destination « {dest.strip()} » au large ({dist:.0f} km), "
+                                   f"{loc['dest_autre']} réponses consécutives")
             elif ((loc["min_dist"] or 1e9) > c.loin_km
                   and t_appel - escale["created_at"] > timedelta(days=r.approche_max_j)):
                 statut, phase = "abandoned", None
