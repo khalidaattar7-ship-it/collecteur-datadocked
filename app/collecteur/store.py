@@ -173,6 +173,18 @@ class Store:
         cols = ", ".join(f"{k} = %({k})s" for k in champs)
         self._q(f"update escales set {cols} where escale_id = %(escale_id)s", {**champs, "escale_id": escale_id})
 
+    def depense_diagnostic(self, groupe: str) -> int:
+        """Crédits débités (journal) pour les navires d'un groupe de diagnostic depuis son début."""
+        r = self._q("""
+            with g as (select e.mmsi, (s.etat->>'diag_debut')::timestamptz debut
+                       from suivi s join escales e using (escale_id) where s.etat->>'diag_groupe' = %s)
+            select coalesce(sum(case when j.statut = 'lance' then j.cout_max when not j.emis then 0
+                                     when j.depense is null then j.cout_max else j.depense end), 0) as d
+            from credits_journal j
+            where j.params->>'imo_or_mmsi' in (select mmsi from g) and j.ts >= (select min(debut) from g)""",
+                    (groupe,), un=True)
+        return int(r["d"])
+
     def escales_ouvertes(self) -> list[dict]:
         """Escales suivies, avec catégorie et dernière position connue."""
         return self._q("""

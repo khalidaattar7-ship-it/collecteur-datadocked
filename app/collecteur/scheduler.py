@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
-from .boucles import (Etat, cadence_phase, traiter_area, traiter_location, traiter_port_calls, valider_area,
+from .boucles import (cadence_diag_s, lever_diagnostic, Etat, cadence_phase, traiter_area, traiter_location, traiter_port_calls, valider_area,
                       valider_location, valider_port_calls)
 from . import congestion as cong
 from .config import COUT, PORT, PORT_LOCODE, Config
@@ -99,7 +99,7 @@ def dus_denses(escales: list[dict], etat: "Etat", t: datetime) -> tuple[list[dic
     dus, prochaine = [], None
     for e in escales:
         loc = etat.d["escales"].get(str(e["escale_id"]), {})
-        cad = loc.get("diag_cadence_s")
+        cad = cadence_diag_s(loc)
         if not cad:
             continue
         der = loc.get("dernier_appel")
@@ -325,6 +325,27 @@ class Scheduler:
                  f"débit {res.depense}")
         self.etat.sauver()
 
+    def plafond_diagnostic_atteint(self, denses: list[dict]) -> bool:
+        """Plafond de crédits d'un groupe de diagnostic (« diag_groupe », « diag_plafond ») : compté
+        dans credits_journal pour les navires du groupe depuis son début (suivi normal compris).
+        Atteint : marques levées, retour aux cadences normales."""
+        groupes = {}
+        for e in denses:
+            loc = self.etat.escale(e["escale_id"])
+            if loc.get("diag_groupe") and loc.get("diag_plafond"):
+                groupes.setdefault(loc["diag_groupe"], int(loc["diag_plafond"]))
+        atteint = False
+        for g, plafond in groupes.items():
+            dep = self.store.depense_diagnostic(g)
+            if dep >= plafond:
+                atteint = True
+                for k, l in self.etat.d["escales"].items():
+                    if l.get("diag_groupe") == g and l.get("diag_cadence_min"):
+                        lever_diagnostic(l, maintenant(), f"plafond du diagnostic ({dep}/{plafond} crédits)")
+                self.log(f"  diagnostic {g} : plafond atteint ({dep}/{plafond} crédits), marques levées")
+                self.etat.sauver()
+        return atteint
+
     def congestion(self) -> None:
         """Recalcule les 3 dernières heures de congestion_horaire depuis les événements d'escale
         (définitions et règles de parité ANP : congestion.py). 0 crédit, idempotent.
@@ -403,8 +424,10 @@ class Scheduler:
             while motif == "passe complète":
                 ouvertes = {e["escale_id"]: e for e in self.store.escales_ouvertes()}
                 denses = [ouvertes[int(k)] for k, l in self.etat.d["escales"].items()
-                          if l.get("diag_cadence_s") and int(k) in ouvertes]
+                          if cadence_diag_s(l) and int(k) in ouvertes]
                 if not denses:
+                    break
+                if self.plafond_diagnostic_atteint(denses):
                     break
                 dus_d, prochaine = dus_denses(denses, self.etat, maintenant())
                 for e in dus_d:

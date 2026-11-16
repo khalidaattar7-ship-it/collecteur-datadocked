@@ -292,19 +292,42 @@ def traiter_area(store, corps: dict, t_appel: Optional[datetime] = None) -> dict
 # « diag_jusqu_au ») est interrogée à cadence CONSTANTE quelle que soit la distance ou la phase,
 # hors dégradation, jusqu'à l'accostage / au départ ou l'échéance. Sert à caractériser la
 # fraîcheur des positions terrestres en fonction de la distance (DECISIONS.md).
-STATUTS_FIN_DIAG = ("berthed", "departed", "abandoned", "hors_perimetre")
+STATUTS_FIN_DIAG = ("anchored", "berthed", "departed", "abandoned", "hors_perimetre")
+
+
+def cadence_diag_s(loc: dict) -> Optional[int]:
+    """Cadence infra-passe (s) d'une escale marquée : par zone de distance (« diag_zones » =
+    [[distance_min_km, secondes], ...], la 1re zone dont la distance minimale est atteinte) ou fixe."""
+    zones = loc.get("diag_zones")
+    if zones and loc.get("diag_cadence_min"):
+        d = loc.get("dernier_dist")
+        for dmin, sec in sorted(zones, key=lambda z: -z[0]):
+            if d is None or d >= dmin:
+                return int(sec)
+    return loc.get("diag_cadence_s")
+
+
+def lever_diagnostic(loc: dict, t: datetime, motif: str) -> None:
+    loc["diag_termine"] = {"le": t.isoformat(), "motif": motif}
+    for k in ("diag_cadence_min", "diag_cadence_s", "diag_zones"):
+        loc.pop(k, None)
 
 
 def cadence_diagnostic(loc: dict, t: datetime, statut: Optional[str] = None) -> Optional[int]:
     cad, fin = loc.get("diag_cadence_min"), loc.get("diag_jusqu_au")
     if not cad:
         return None
-    if (fin and t >= datetime.fromisoformat(fin)) or statut in STATUTS_FIN_DIAG:
-        loc["diag_termine"] = {"le": t.isoformat(), "motif": statut or "échéance"}
-        loc.pop("diag_cadence_min", None)
-        loc.pop("diag_cadence_s", None)
+    if statut in STATUTS_FIN_DIAG:
+        lever_diagnostic(loc, t, statut)
         return None
-    return int(cad)
+    if loc.get("phase") == "rade_stable":                # arrêté dans la zone : l'arrivée est passée
+        lever_diagnostic(loc, t, "arrêt en zone")
+        return None
+    if fin and t >= datetime.fromisoformat(fin):
+        lever_diagnostic(loc, t, "échéance")
+        return None
+    s = cadence_diag_s(loc)
+    return max(1, round(s / 60)) if s else int(cad)
 
 
 def cadence_phase(cfg: Config, phase: Optional[str], dist: Optional[float], niveau: int,

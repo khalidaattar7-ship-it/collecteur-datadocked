@@ -259,15 +259,14 @@ def test_cadence_diagnostic_constante_puis_levee(env):
     store.commit()
     loc = etat.escale(e["escale_id"])
     loc.update(diag_cadence_min=15, diag_debut=T0.isoformat(), diag_jusqu_au=(T0 + timedelta(days=3)).isoformat())
-    for i, (pos, ns, sog) in enumerate((((36.5, -9.5), "Underway using Engine", 14), ((34.4, -7.9), "Underway using Engine", 12),
-                                        (RADE, "At Anchor", 0.1))):
+    for i, (pos, ns, sog) in enumerate((((36.5, -9.5), "Underway using Engine", 14), ((34.4, -7.9), "Underway using Engine", 12))):
         t = T0 + timedelta(minutes=15 * i)
         s = suivre(cfg, store, etat, m, fiche(m, pos, ns, sog, t), t, polys)
         assert s["cadence_min"] == 15, (i, s)
-    t = T0 + timedelta(minutes=60)
-    s = suivre(cfg, store, etat, m, fiche(m, QUAI_A, "Moored", 0.0, t), t, polys)
-    assert s["statut"] == "berthed" and s["cadence_min"] != 15 and "diag_cadence_min" not in loc
-    assert loc["diag_termine"]["motif"] == "berthed"
+    t = T0 + timedelta(minutes=30)
+    s = suivre(cfg, store, etat, m, fiche(m, RADE, "At Anchor", 0.1, t), t, polys)   # arrivée : marque levée
+    assert s["statut"] == "anchored" and s["cadence_min"] != 15 and "diag_cadence_min" not in loc
+    assert loc["diag_termine"]["motif"] == "anchored"
 
 
 @avec_base
@@ -305,3 +304,18 @@ def test_dus_denses_cadence_infra_passe():
                          "3": {"cadence_min": 20}}}
     dus, prochaine = dus_denses([{"escale_id": 1}, {"escale_id": 2}, {"escale_id": 3}], E(), T0 + timedelta(seconds=61))
     assert [e["escale_id"] for e in dus] == [1] and prochaine == T0 + timedelta(seconds=90)
+
+
+def test_cadence_diagnostic_par_zone_et_motifs():
+    from app.collecteur.boucles import cadence_diagnostic
+    fin = (T0 + timedelta(days=3)).isoformat()
+    loc = {"diag_cadence_min": 1, "diag_zones": [[600, 480], [0, 180]], "diag_jusqu_au": fin, "dernier_dist": 900.0}
+    assert cadence_diagnostic(loc, T0, "approaching") == 8
+    loc["dernier_dist"] = 400.0
+    assert cadence_diagnostic(loc, T0, "approaching") == 3
+    assert cadence_diagnostic(dict(loc), T0 + timedelta(days=4), "approaching") is None
+    l2 = dict(loc)
+    cadence_diagnostic(l2, T0 + timedelta(days=4), "approaching")
+    assert l2["diag_termine"]["motif"] == "échéance" and "diag_zones" not in l2
+    l3 = dict(loc)
+    assert cadence_diagnostic(l3, T0, "anchored") is None and l3["diag_termine"]["motif"] == "anchored"
