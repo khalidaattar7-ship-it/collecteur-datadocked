@@ -90,6 +90,27 @@ class EtatDB(Etat):
 
 
 # ------------------------------------------------------------------------------- périmètre
+MARGE_SOUS_PASSE_S = 15
+
+
+def dus_denses(escales: list[dict], etat: "Etat", t: datetime) -> tuple[list[dict], Optional[datetime]]:
+    """Escales marquées « diag_cadence_s » (cadence infra-passe, en secondes) dues à t, et la
+    prochaine échéance parmi celles qui ne le sont pas encore."""
+    dus, prochaine = [], None
+    for e in escales:
+        loc = etat.d["escales"].get(str(e["escale_id"]), {})
+        cad = loc.get("diag_cadence_s")
+        if not cad:
+            continue
+        der = loc.get("dernier_appel")
+        ech = datetime.fromisoformat(der) + timedelta(seconds=int(cad)) if der else t
+        if ech <= t:
+            dus.append(e)
+        elif prochaine is None or ech < prochaine:
+            prochaine = ech
+    return dus, prochaine
+
+
 def eligible(cfg: Config, e: dict, loc: dict) -> bool:
     """LINER : toujours (approche + port). Autre commerce : seulement en zone portuaire, ou
     amorcé par la découverte / arrival (pas encore positionné, sans ETA d'expected)."""
@@ -376,6 +397,27 @@ class Scheduler:
                     break
                 self.suivre(e, niveau)
                 n += 1
+            # SOUS-PASSES DENSES (diagnostic) : les escales marquées « diag_cadence_s » sont
+            # réinterrogées à cette cadence jusqu'à la fin de la passe. Même verrou, même garde-fou,
+            # même journal : aucun appel facturé en dehors de ce pipeline.
+            while motif == "passe complète":
+                ouvertes = {e["escale_id"]: e for e in self.store.escales_ouvertes()}
+                denses = [ouvertes[int(k)] for k, l in self.etat.d["escales"].items()
+                          if l.get("diag_cadence_s") and int(k) in ouvertes]
+                if not denses:
+                    break
+                dus_d, prochaine = dus_denses(denses, self.etat, maintenant())
+                for e in dus_d:
+                    if max_appels is not None and n >= max_appels:
+                        motif = f"plafond d'appels de la passe ({max_appels})"
+                        break
+                    self.suivre(e, niveau)
+                    n += 1
+                if not dus_d:
+                    attente = ((prochaine or maintenant()) - maintenant()).total_seconds()
+                    if maintenant() + timedelta(seconds=max(attente, 0) + MARGE_SOUS_PASSE_S) >= fin:
+                        break
+                    time.sleep(max(attente, 1))
         except RefusBudget as exc:
             motif = f"BLOCAGE ({exc.portee}) : {exc}"
         finally:

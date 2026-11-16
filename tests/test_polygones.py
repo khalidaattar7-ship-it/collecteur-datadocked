@@ -293,3 +293,15 @@ def test_reponse_sans_destination_n_abandonne_pas(env):
                  "unlocodeDestination": "ESVLC"}
         s = suivre(cfg, store, etat, m, autre, t, polys)
         assert s["statut"] == attendu, (i, s)
+
+
+def test_dus_denses_cadence_infra_passe():
+    """Escales à cadence infra-passe : dues quand dernier appel + cadence est échu."""
+    from app.collecteur.scheduler import dus_denses
+
+    class E:
+        d = {"escales": {"1": {"diag_cadence_s": 60, "dernier_appel": T0.isoformat()},
+                         "2": {"diag_cadence_s": 60, "dernier_appel": (T0 + timedelta(seconds=30)).isoformat()},
+                         "3": {"cadence_min": 20}}}
+    dus, prochaine = dus_denses([{"escale_id": 1}, {"escale_id": 2}, {"escale_id": 3}], E(), T0 + timedelta(seconds=61))
+    assert [e["escale_id"] for e in dus] == [1] and prochaine == T0 + timedelta(seconds=90)

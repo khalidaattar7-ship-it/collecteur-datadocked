@@ -302,6 +302,7 @@ def cadence_diagnostic(loc: dict, t: datetime, statut: Optional[str] = None) -> 
     if (fin and t >= datetime.fromisoformat(fin)) or statut in STATUTS_FIN_DIAG:
         loc["diag_termine"] = {"le": t.isoformat(), "motif": statut or "échéance"}
         loc.pop("diag_cadence_min", None)
+        loc.pop("diag_cadence_s", None)
         return None
     return int(cad)
 
