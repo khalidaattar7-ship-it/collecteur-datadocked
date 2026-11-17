@@ -179,7 +179,9 @@ class Store:
             with g as (select e.mmsi, (s.etat->>'diag_debut')::timestamptz debut
                        from suivi s join escales e using (escale_id) where s.etat->>'diag_groupe' = %s)
             select coalesce(sum(case when j.statut = 'lance' then j.cout_max when not j.emis then 0
-                                     when j.depense is null then j.cout_max else j.depense end), 0) as d
+                                     when j.depense is null then j.cout_max
+                                     when j.depense > j.cout_max or j.depense < 0 then j.cout_max
+                                     else j.depense end), 0) as d
             from credits_journal j
             where j.params->>'imo_or_mmsi' in (select mmsi from g) and j.ts >= (select min(debut) from g)""",
                     (groupe,), un=True)
