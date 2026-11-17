@@ -68,6 +68,7 @@ class JournalDB:
         case when statut = 'lance' then cout_max         -- tué pendant l'appel : coût max
              when not emis then 0                        -- jamais parti : non facturable
              when depense is null then cout_max          -- débit illisible : coût max
+             when depense > cout_max or depense < 0 then cout_max   -- anomalie de solde : coût normal
              else depense end"""
 
     def totaux(self, session: Optional[str] = None, t: Optional[datetime] = None) -> dict:

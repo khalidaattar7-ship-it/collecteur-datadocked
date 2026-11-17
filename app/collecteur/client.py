@@ -7,7 +7,7 @@ Séquence d'UN essai :
   4. BRUT archivé dans api_raw (corps COMPLET, commit) AVANT tout traitement, quel que soit le
      statut (copie disque en plus si COLLECTOR_BRUT_DIR) ;
   5. solde relu ; journal complété avec le débit RÉEL (solde avant − après) ;
-  6. débit > coût max -> ArretCollecte (consommation concurrente sur le compte).
+  6. anomalie de solde (débit > coût max ou < 0, solde négatif) -> compté au coût normal, ArretCollecte (alerte).
 Nouvel essai SEULEMENT si la requête n'est jamais partie (non_emise), ou si 429/5xx n'a rien
 débité. Une requête partie dont la réponse est perdue n'est JAMAIS redemandée : un ReadTimeout
 a été facturé 50 crédits le 2026-10-20.
@@ -154,6 +154,17 @@ class ClientDD:
             apres = self.solde()
             depense = None if apres is None else avant - apres
             emis = statut != "non_emise"
+            # ANOMALIE DE SOLDE : débit supérieur au coût d'un appel, négatif, ou solde négatif
+            # (expiration / remise à zéro de l'abonnement, recharge, consommation concurrente).
+            # Le débit lu n'est pas une dépense : l'appel est compté à son coût NORMAL, l'anomalie est
+            # journalisée, puis la passe s'arrête (alerte). Cas réel : 16/11/2026 17:18, solde
+            # 29 006 -> −5 à l'expiration, lu comme un débit de 29 011 crédits.
+            anomalie = None
+            if apres is not None and (apres < 0 or depense > cout or depense < 0):
+                anomalie = (f"ANOMALIE de solde sur {endpoint} : avant {avant}, après {apres} (débit lu {depense}) ; "
+                            f"compté au coût normal {cout}")
+                depense = cout if emis else 0
+                erreur = f"{erreur} | {anomalie}" if erreur else anomalie
             self.journal.ajouter({"evt": "termine", "ts": maintenant().isoformat(), "appel_id": appel_id,
                                   "session": self.session, "endpoint": endpoint, "statut": statut, "http": http,
                                   "erreur": erreur, "emis": emis, "solde_avant": avant, "solde_apres": apres,
@@ -162,9 +173,9 @@ class ClientDD:
             if self.store is not None:
                 self.store.api_raw_credits(api_raw_id, depense)
                 self.store.commit()
-            if depense is not None and depense > cout:
-                raise ArretCollecte(f"débit {depense} > coût max {cout} sur {endpoint} : consommation "
-                                    f"concurrente sur le compte ?")
+            if anomalie:
+                raise ArretCollecte(f"{anomalie} — expiration/remise à zéro de l'abonnement ou consommation "
+                                    f"concurrente ? Passe arrêtée.")
             if apres is None:
                 raise ArretCollecte("solde indéterminable après l'appel")
             if statut == "non_emise" and non_emises < TENTATIVES_NON_EMISE - 1:
