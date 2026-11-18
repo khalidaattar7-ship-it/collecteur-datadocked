@@ -68,13 +68,17 @@ class Plafonds:
 #   au-delà : blocage dur par le garde-fou (plafonds jour / mois).
 # Rafale bornée à 10-15 min (précision de l'accostage).
 NIVEAUX = (
-    {"stable": 120, "rafale": 12, "loin": 60, "proche": 20},     # 0 : nominal
-    {"stable": 180, "rafale": 12, "loin": 60, "proche": 20},     # 1 : sweeps in-port
-    {"stable": 240, "rafale": 15, "loin": 60, "proche": 20},     # 2 : sweeps + rafale
-    {"stable": 240, "rafale": 15, "loin": 120, "proche": 20},    # 3 : approche au large
-    {"stable": 240, "rafale": 15, "loin": 180, "proche": 20},    # 4
-    {"stable": 240, "rafale": 15, "loin": 180, "proche": 30},    # 5 : approche finale, en dernier
-    {"stable": 240, "rafale": 15, "loin": 180, "proche": 60},    # 6
+    # Décision budget 18/11 -> 18/12 : in-port ADAPTATIF (à quai 60 min, en rade 30 min,
+    # transition 12 min jusqu'au nouvel état) ; approche LINER DENSE jusqu'à l'entrée en zone
+    # (8 min au-delà de 150 km = rafraîchissement mesuré au large, 5 min en deçà). Les passes
+    # étant toutes les 5 min, 8 min se sert en pratique à ~10 min.
+    {"quai": 60, "rade": 30, "rafale": 12, "loin": 8, "proche": 5},       # 0 : nominal
+    {"quai": 120, "rade": 60, "rafale": 12, "loin": 8, "proche": 5},      # 1 : sweeps in-port
+    {"quai": 240, "rade": 120, "rafale": 15, "loin": 8, "proche": 5},     # 2 : sweeps + rafale
+    {"quai": 240, "rade": 120, "rafale": 15, "loin": 20, "proche": 5},    # 3 : approche au large
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 60, "proche": 10},   # 4
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 5 : approche finale, en dernier
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 6
 )
 
 

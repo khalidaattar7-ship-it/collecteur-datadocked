@@ -27,9 +27,9 @@ from .polygones import Polygones
 
 CASA = ZoneInfo("Africa/Casablanca")
 # Les rafales (accostages, départs) ne sont pas visibles sur une photo de l'instant : provision
-# pour la projection = ~7 escales de commerce par jour × ~15 appels (rafale d'accostage ~1-2 h
-# à 12 min + rafale de départ + 1-3 confirmations). Hypothèse, à remplacer par la mesure.
-PROVISION_RAFALES_JOUR = 105
+# pour la projection = ~18,5 transitions par jour (mesure 13-16/11) × ~1,5 h × 5 appels/h à
+# 12 min. À recaler sur la mesure après quelques jours de cadence adaptative.
+PROVISION_RAFALES_JOUR = 140
 
 
 # ------------------------------------------------------------------------------- état en base

@@ -319,3 +319,14 @@ def test_cadence_diagnostic_par_zone_et_motifs():
     assert l2["diag_termine"]["motif"] == "échéance" and "diag_zones" not in l2
     l3 = dict(loc)
     assert cadence_diagnostic(l3, T0, "anchored") is None and l3["diag_termine"]["motif"] == "anchored"
+
+
+def test_cadence_adaptative_niveau0():
+    """Décision budget 18/11 : à quai 60 min, en rade 30 min, transition 12 min."""
+    from app.collecteur.boucles import cadence_phase
+    cfg = Config()
+    t = datetime(2026, 11, 18, tzinfo=timezone.utc)
+    assert cadence_phase(cfg, "quai", 3.0, 0) == 60
+    assert cadence_phase(cfg, "rade_stable", 10.0, 0) == 30
+    assert cadence_phase(cfg, "mouvement", 10.0, 0, phase_depuis=t, t=t + timedelta(minutes=30)) == 12
+    assert cadence_phase(cfg, "mouvement", 10.0, 0, phase_depuis=t, t=t + timedelta(hours=4)) == 60

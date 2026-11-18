@@ -133,11 +133,11 @@ def hypothese_regime(cfg: Config) -> None:
     f = cfg.frequences
     fixe = (24 / f.expected_h + 24 / f.arrival_h) * COUT["port-calls-by-port"] + 24 / f.decouverte_h * COUT[
         "get-vessels-by-area"]
-    proche, loin, zone = 1, 5, 25
-    print(f"Hypothèse de régime établi : {proche} LINER à < 150 km, {loin} LINER au large, {zone} navires de "
-          f"commerce en zone, rafales {PROVISION_RAFALES_JOUR} appels/jour ; fixe {fixe:.0f} cr/jour")
+    proche, loin, quai, rade = 0.4, 1.8, 16, 7
+    print(f"Hypothèse de régime établi : {proche} LINER à < 150 km, {loin} LINER au large, {quai} navires à quai + "
+          f"{rade} en rade, rafales {PROVISION_RAFALES_JOUR} appels/jour ; fixe {fixe:.0f} cr/jour")
     for i, n in enumerate(cfg.cadences.niveaux):
-        j = (proche * 1440 / n["proche"] + loin * 1440 / n["loin"] + zone * 1440 / n["stable"]
+        j = (proche * 1440 / n["proche"] + loin * 1440 / n["loin"] + quai * 1440 / n["quai"] + rade * 1440 / n["rade"]
              + PROVISION_RAFALES_JOUR * 12 / n["rafale"] + fixe)
         print(f"  niveau {i} {n} : {j:4.0f} cr/jour ≈ {j * 30:6.0f} cr/mois")
 

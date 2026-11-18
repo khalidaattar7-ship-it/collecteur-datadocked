@@ -13,8 +13,8 @@ PÉRIMÈTRE (décisions du 2026-11-12) :
 
 PHASES d'une escale (état local, etat.json) et cadence associée (échelle NIVEAUX) :
   approche        LINER hors zone : « proche » (<= 150 km) ou « loin »
-  rade_stable     en zone, immobile, pas à quai : « stable » (120 min nominal)
-  quai            Moored à <= quai_km, immobile : « stable »
+  rade_stable     en zone, immobile, pas à quai : « rade » (30 min nominal)
+  quai            Moored à <= quai_km, immobile : « quai » (60 min nominal)
   mouvement       en zone et en mouvement (SOG > 1 kn, ou Underway sans SOG) : RAFALE (10-15
                   min) jusqu'au changement d'état ; au-delà de rafale_max_h (dérive au large en
                   attente) : mouvement_lent
@@ -336,8 +336,10 @@ def cadence_phase(cfg: Config, phase: Optional[str], dist: Optional[float], nive
     n = c.niveaux[min(niveau, len(c.niveaux) - 1)]
     if phase == "approche":
         return n["proche"] if dist is not None and dist <= c.loin_km else n["loin"]
-    if phase in ("rade_stable", "quai"):
-        return n["stable"]
+    if phase == "quai":
+        return n["quai"]
+    if phase == "rade_stable":
+        return n["rade"]
     if phase == "mouvement":
         if phase_depuis and t and t - phase_depuis > timedelta(hours=c.rafale_max_h):
             return c.mouvement_lent
