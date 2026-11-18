@@ -75,10 +75,12 @@ NIVEAUX = (
     {"quai": 60, "rade": 30, "rafale": 12, "loin": 8, "proche": 5},       # 0 : nominal
     {"quai": 120, "rade": 60, "rafale": 12, "loin": 8, "proche": 5},      # 1 : sweeps in-port
     {"quai": 240, "rade": 120, "rafale": 15, "loin": 8, "proche": 5},     # 2 : sweeps + rafale
-    {"quai": 240, "rade": 120, "rafale": 15, "loin": 20, "proche": 5},    # 3 : approche au large
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 60, "proche": 10},   # 4
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 5 : approche finale, en dernier
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 6
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 8, "proche": 5},     # 3
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 20, "proche": 5},    # 4 : approche au large
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 60, "proche": 5},    # 5
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 5},   # 6
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 7 : approche finale, en dernier
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 8
 )
 
 
