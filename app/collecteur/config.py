@@ -69,18 +69,19 @@ class Plafonds:
 # Rafale bornée à 10-15 min (précision de l'accostage).
 NIVEAUX = (
     # Décision budget 18/11 -> 18/12 : in-port ADAPTATIF (à quai 60 min, en rade 30 min,
-    # transition 12 min jusqu'au nouvel état) ; approche LINER DENSE jusqu'à l'entrée en zone
-    # (8 min au-delà de 150 km = rafraîchissement mesuré au large, 5 min en deçà). Les passes
-    # étant toutes les 5 min, 8 min se sert en pratique à ~10 min.
-    {"quai": 60, "rade": 30, "rafale": 12, "loin": 8, "proche": 5},       # 0 : nominal
-    {"quai": 120, "rade": 60, "rafale": 12, "loin": 8, "proche": 5},      # 1 : sweeps in-port
-    {"quai": 240, "rade": 120, "rafale": 15, "loin": 8, "proche": 5},     # 2 : sweeps + rafale
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 8, "proche": 5},     # 3
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 20, "proche": 5},    # 4 : approche au large
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 60, "proche": 5},    # 5
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 5},   # 6
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 7 : approche finale, en dernier
-    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 8
+    # transition 12 min jusqu'au nouvel état). Approche LINER alignée sur la cadence de SERVICE du
+    # modèle ETA de production (20 min à <= 150 km, 60 min au-delà, sur toute l'approche) : c'est
+    # la cadence simulée à l'entraînement ; plus dense ne gagne rien et décale la distribution des
+    # features de fenêtre (n_positions_6h, masque). Les escales en diagnostic dense gardent leur
+    # cadence propre (diag_cadence_min).
+    {"quai": 60, "rade": 30, "rafale": 12, "loin": 60, "proche": 20},     # 0 : nominal
+    {"quai": 120, "rade": 60, "rafale": 12, "loin": 60, "proche": 20},    # 1 : sweeps in-port
+    {"quai": 240, "rade": 120, "rafale": 15, "loin": 60, "proche": 20},   # 2 : sweeps + rafale
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 60, "proche": 20},   # 3
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 120, "proche": 20},  # 4 : approche au large
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 5
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 40},  # 6 : approche finale, en dernier
+    {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 7
 )
 
 

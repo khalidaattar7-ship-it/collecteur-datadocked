@@ -128,12 +128,12 @@ def cmd_ddl(args, cfg) -> int:
 
 
 def hypothese_regime(cfg: Config) -> None:
-    """Régime établi HYPOTHÉTIQUE (~2,4 LINER et ~7 navires de commerce arrivent par jour ;
-    approche < 150 km ≈ 7 h ; LINER attendus J−2 ; ~25 navires de commerce en zone)."""
+    """Régime établi HYPOTHÉTIQUE, calé sur le relevé de reprise du 18/11 (21:20 UTC) : ~1 LINER à
+    < 150 km, ~8 LINER attendus au large (liste expected), ~19 navires à quai, ~10 en rade."""
     f = cfg.frequences
     fixe = (24 / f.expected_h + 24 / f.arrival_h) * COUT["port-calls-by-port"] + 24 / f.decouverte_h * COUT[
         "get-vessels-by-area"]
-    proche, loin, quai, rade = 0.4, 1.8, 16, 7
+    proche, loin, quai, rade = 1, 8, 19, 10
     print(f"Hypothèse de régime établi : {proche} LINER à < 150 km, {loin} LINER au large, {quai} navires à quai + "
           f"{rade} en rade, rafales {PROVISION_RAFALES_JOUR} appels/jour ; fixe {fixe:.0f} cr/jour")
     for i, n in enumerate(cfg.cadences.niveaux):

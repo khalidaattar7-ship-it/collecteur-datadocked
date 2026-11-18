@@ -52,8 +52,8 @@ def test_cycle_liner_complet(env):
     store.creer_escale(m, None)
     store.commit()
     seq = [  # (lat, ns, sog, minutes) -> (statut, phase, cadence)
-        (LOIN, "Underway using Engine", 14, 0, ("approaching", "approche", 8)),
-        (PROCHE, "Underway using Engine", 13, 400, ("approaching", "approche", 5)),
+        (LOIN, "Underway using Engine", 14, 0, ("approaching", "approche", 60)),
+        (PROCHE, "Underway using Engine", 13, 400, ("approaching", "approche", 20)),
         (ZONE, "Underway using Engine", 8, 900, ("approaching", "mouvement", 12)),
         (ZONE, "At Anchor", 0.1, 912, ("anchored", "rade_stable", 30)),
         (ZONE, "At Anchor", 0.2, 1500, ("anchored", "rade_stable", 30)),
@@ -168,7 +168,7 @@ def test_projection_degrade(env, tmp_path):
     p = projection(cfg, j, [dict(e, categorie="VRAC", min_dist=10.0) for e in store.escales_ouvertes()], etat,
                    t=datetime(2026, 11, 1, 0, 5, tzinfo=timezone.utc))
     # 60 × 1440/30 = 2 880/j : au-dessus du plafond jour -> élargir les sweeps (niveau >= 1), approche finale intacte
-    assert p["niveau"] >= 1 and NIVEAUX[p["niveau"]]["proche"] == 5
+    assert p["niveau"] >= 1 and NIVEAUX[p["niveau"]]["proche"] == NIVEAUX[0]["proche"]
 
 
 def test_arrivee_d_une_visite_precedente_ignoree(env):

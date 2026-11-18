@@ -330,3 +330,13 @@ def test_cadence_adaptative_niveau0():
     assert cadence_phase(cfg, "rade_stable", 10.0, 0) == 30
     assert cadence_phase(cfg, "mouvement", 10.0, 0, phase_depuis=t, t=t + timedelta(minutes=30)) == 12
     assert cadence_phase(cfg, "mouvement", 10.0, 0, phase_depuis=t, t=t + timedelta(hours=4)) == 60
+
+
+def test_approche_liner_cadence_service_eta():
+    """Approche LINER = cadence de service du modèle ETA C : 20 min <= 150 km, 60 min au-delà, à toute distance."""
+    from app.collecteur.boucles import cadence_phase
+    cfg = Config()
+    assert cadence_phase(cfg, "approche", 150.0, 0) == 20
+    assert cadence_phase(cfg, "approche", 60.0, 0) == 20
+    assert cadence_phase(cfg, "approche", 151.0, 0) == 60
+    assert cadence_phase(cfg, "approche", 1300.0, 0) == 60
