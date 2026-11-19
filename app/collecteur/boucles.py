@@ -330,6 +330,38 @@ def cadence_diagnostic(loc: dict, t: datetime, statut: Optional[str] = None) -> 
     return max(1, round(s / 60)) if s else int(cad)
 
 
+def fin_mouillage(ae: datetime, be: Optional[datetime], t_fin: datetime) -> datetime:
+    """Sortie du mouillage restée ouverte : l'accostage s'il suit le mouillage, sinon la fin d'escale."""
+    return be if be is not None and be >= ae else max(t_fin, ae)
+
+
+def cloturer_sejours(escale: dict, maj: dict, t_fin: datetime) -> None:
+    """Départ : ferme le séjour à quai et au mouillage restés ouverts (sortie de quai = t_fin, l'atdUtc
+    quand il existe ; sortie du mouillage = accostage, sinon t_fin). Sans cela, un navire reparti reste
+    compté à quai / en rade à tout instant ultérieur (comptages d'occupation et de file d'attente).
+    Une sortie déjà observée n'est jamais remplacée."""
+    be = maj.get("berth_entry_at") or escale.get("berth_entry_at")
+    if be is not None and (maj.get("berth_exit_at") or escale.get("berth_exit_at")) is None:
+        maj["berth_exit_at"] = max(t_fin, be)
+    ae = maj.get("anchorage_entry_at") or escale.get("anchorage_entry_at")
+    if ae is not None and (maj.get("anchorage_exit_at") or escale.get("anchorage_exit_at")) is None:
+        maj["anchorage_exit_at"] = fin_mouillage(ae, be, t_fin)
+
+
+def rattrapage_sorties(e: dict, t_fin_brut: Optional[datetime] = None) -> dict:
+    """Sorties à remplir sur une escale EXISTANTE (rattrapage, 0 crédit), mêmes règles qu'en direct :
+    mouillage suivi d'un accostage -> sortie du mouillage = accostage ; escale partie -> cloturer_sejours
+    avec departure_at, sinon l'atdUtc retrouvé dans api_raw (`t_fin_brut`). Rien d'inventé sinon."""
+    maj: dict = {}
+    ae, be = e.get("anchorage_entry_at"), e.get("berth_entry_at")
+    if ae is not None and e.get("anchorage_exit_at") is None and be is not None and be >= ae:
+        maj["anchorage_exit_at"] = be
+    t_fin = e.get("departure_at") or t_fin_brut
+    if e.get("statut") == "departed" and t_fin is not None:
+        cloturer_sejours(e, maj, t_fin)
+    return maj
+
+
 def cadence_phase(cfg: Config, phase: Optional[str], dist: Optional[float], niveau: int,
                   phase_depuis: Optional[datetime] = None, t: Optional[datetime] = None) -> int:
     c = cfg.cadences
@@ -476,8 +508,9 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
 
         if (txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd is not None and debut is not None
                 and atd > debut - timedelta(hours=1)):
-            # Départ CONFIRMÉ par Data Docked : atdUtc fait autorité.
+            # Départ CONFIRMÉ par Data Docked : atdUtc fait autorité (aussi pour la sortie de quai).
             statut, phase, maj["departure_at"] = "departed", None, atd
+            cloturer_sejours(escale, maj, atd)
             evt("appareillage", atd, "autorite", {"source": "atdUtc", "unlocodeLastport": PORT_LOCODE,
                                                    "vu_le": t_appel.isoformat(), "dist_km": round(dist, 1)})
             sortie["motif"] = f"atdUtc {atd:%Y-%m-%d %H:%M} (lastPort {PORT_LOCODE})"
@@ -496,6 +529,10 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                     # comptage a_quai ; exclue des statistiques de précision (observe = False).
                     evt("accostage", maj["berth_entry_at"], "non_observe", fo)
                     sortie["motif"] = "déjà à quai au premier relevé : accostage non observé"
+                ae = escale.get("anchorage_entry_at")
+                if ae is not None and escale.get("anchorage_exit_at") is None and maj["berth_entry_at"] >= ae:
+                    # Sortie du mouillage non vue en mouvement : bornée par l'accostage (1er Moored à quai).
+                    maj["anchorage_exit_at"] = maj["berth_entry_at"]
             statut, phase = "berthed", "quai"
         elif en_rade:
             if statut in ("approaching", "anchored") and escale.get("anchorage_entry_at") is None:
@@ -513,6 +550,13 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
                     t_m = arr if arr is not None and arr <= prem else prem
                     maj["anchorage_entry_at"] = t_m
                     evt("mouillage", t_m, "non_observe", {**fo, "source": "arrival" if t_m is arr else "1re observation"})
+            elif (statut == "anchored" and escale.get("anchorage_exit_at") is not None
+                  and escale.get("berth_entry_at") is None):
+                # Revu au mouillage sans avoir accosté : la « sortie » vue en mouvement n'était qu'un
+                # repositionnement (évitage, changement de poste de mouillage). Annulée : le navire est
+                # toujours en attente en rade.
+                maj["anchorage_exit_at"] = None
+                store.evenement_supprimer(e_id, "sortie_mouillage")
             elif statut == "berthed":
                 # quitte le quai pour la rade sans mouvement observé entre deux relevés
                 maj["berth_exit_at"] = pr
@@ -560,6 +604,7 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
             if loc["confirmations"] >= c.confirmations_max and dist > r.depart_km:
                 sz = datetime.fromisoformat(loc["sortie_zone_pr"])
                 statut, phase, maj["departure_at"] = "departed", None, sz
+                cloturer_sejours(escale, maj, sz)
                 evt("appareillage", sz, "basse", {"source": "repli : 1re position hors zone", "dist_km": round(dist, 1),
                                                    "confirmations_sans_atd": loc["confirmations"]})
                 sortie["motif"] = f"départ de repli ({loc['confirmations']} confirmations sans atdUtc)"

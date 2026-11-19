@@ -219,3 +219,110 @@ def test_decouverte_ne_rouvre_pas_un_navire_tout_juste_parti(env):
     zone = {"vessels": [{"mmsi": "961", "name": "SORTANT", "typeSpecific": "Bulk Carrier"}]}
     assert traiter_area(store, zone, T0)["escales_creees"] == 0
     assert traiter_area(store, zone, T0 + timedelta(hours=13))["escales_creees"] == 1   # revenu plus tard
+
+
+# ---- sorties de quai / de mouillage (comptages d'occupation et de file d'attente) ----------
+def a_quai(store, t):
+    return store._q("select count(*) n from escales where berth_entry_at < %s "
+                    "and (berth_exit_at is null or berth_exit_at >= %s)", (t, t), un=True)["n"]
+
+
+def en_rade(store, t):
+    return store._q("select count(*) n from escales where anchorage_entry_at < %s "
+                    "and (anchorage_exit_at is null or anchorage_exit_at >= %s)", (t, t), un=True)["n"]
+
+
+def test_navire_reparti_plus_compte_a_quai(env):
+    """Départ confirmé par atdUtc directement depuis le quai (aucun relevé « en mouvement » entre les deux) :
+    la sortie de quai = atdUtc ; le navire n'est plus compté à quai ensuite."""
+    cfg, store, etat = env
+    m = "211"
+    store.creer_escale(m, None)
+    store.commit()
+    suivre(cfg, store, etat, m, fiche(m, QUAI, "Moored", 0.0, T0), T0)
+    t1 = T0 + timedelta(hours=1)
+    assert a_quai(store, t1) == 1
+    atd = T0 + timedelta(hours=20)
+    t = atd + timedelta(minutes=50)
+    s = suivre(cfg, store, etat, m, fiche(m, 33.9, "Underway using Engine", 13, t, last="MACAS", atd=atd), t)
+    assert s["statut"] == "departed"
+    e = store._q("select * from escales where mmsi = %s", (m,), un=True)
+    assert e["berth_exit_at"] == atd and e["departure_at"] == atd
+    assert a_quai(store, atd - timedelta(minutes=1)) == 1
+    assert a_quai(store, atd + timedelta(minutes=1)) == 0
+
+
+def test_navire_accoste_plus_compte_en_rade(env):
+    """Mouillage puis 1er relevé à quai sans relevé intermédiaire en mouvement : sortie du mouillage =
+    accostage ; le navire n'est plus compté en rade."""
+    cfg, store, etat = env
+    m = "212"
+    store.creer_escale(m, None)
+    store.commit()
+    suivre(cfg, store, etat, m, fiche(m, LOIN, "Underway using Engine", 14, T0), T0)
+    t_m = T0 + timedelta(hours=30)
+    suivre(cfg, store, etat, m, fiche(m, ZONE, "At Anchor", 0.1, t_m), t_m)
+    assert en_rade(store, t_m + timedelta(hours=1)) == 1
+    t_q = t_m + timedelta(hours=40)
+    s = suivre(cfg, store, etat, m, fiche(m, QUAI, "Moored", 0.0, t_q), t_q)
+    assert s["statut"] == "berthed"
+    e = store._q("select * from escales where mmsi = %s", (m,), un=True)
+    assert e["anchorage_exit_at"] == e["berth_entry_at"] <= t_q
+    assert en_rade(store, t_q + timedelta(minutes=1)) == 0
+
+
+def test_sortie_mouillage_observee_non_remplacee(env):
+    """Sortie du mouillage vue en mouvement (environ 1 h 30 avant l'accostage) : conservée."""
+    cfg, store, etat = env
+    m = "213"
+    store.creer_escale(m, None)
+    store.commit()
+    suivre(cfg, store, etat, m, fiche(m, LOIN, "Underway using Engine", 14, T0), T0)
+    t_m = T0 + timedelta(hours=30)
+    suivre(cfg, store, etat, m, fiche(m, ZONE, "At Anchor", 0.1, t_m), t_m)
+    t_b = t_m + timedelta(hours=10)
+    suivre(cfg, store, etat, m, fiche(m, ZONE - 0.05, "Underway using Engine", 6, t_b), t_b)
+    t_q = t_b + timedelta(minutes=80)
+    suivre(cfg, store, etat, m, fiche(m, QUAI, "Moored", 0.0, t_q), t_q)
+    e = store._q("select * from escales where mmsi = %s", (m,), un=True)
+    assert e["anchorage_exit_at"] == t_b
+
+
+def test_rattrapage_sorties():
+    from app.collecteur.boucles import rattrapage_sorties
+    a, b, d = T0, T0 + timedelta(hours=10), T0 + timedelta(hours=30)
+    base = {"anchorage_entry_at": None, "anchorage_exit_at": None, "berth_entry_at": None, "berth_exit_at": None,
+            "departure_at": None, "statut": "departed"}
+    # parti depuis le quai, mouillage avant : sortie de quai = départ, sortie du mouillage = accostage
+    assert rattrapage_sorties({**base, "anchorage_entry_at": a, "berth_entry_at": b, "departure_at": d}) == {
+        "anchorage_exit_at": b, "berth_exit_at": d}
+    # encore à quai : seule la sortie du mouillage est bornée par l'accostage
+    assert rattrapage_sorties({**base, "statut": "berthed", "anchorage_entry_at": a, "berth_entry_at": b}) == {
+        "anchorage_exit_at": b}
+    # parti du mouillage sans accoster : sortie du mouillage = départ
+    assert rattrapage_sorties({**base, "anchorage_entry_at": a, "departure_at": d}) == {"anchorage_exit_at": d}
+    # parti sans heure de départ : atdUtc relu dans api_raw, sinon rien d'inventé
+    assert rattrapage_sorties({**base, "berth_entry_at": b}, d) == {"berth_exit_at": d}
+    assert rattrapage_sorties({**base, "berth_entry_at": b}) == {}
+    # sortie déjà observée : jamais remplacée
+    assert rattrapage_sorties({**base, "berth_entry_at": b, "berth_exit_at": b + timedelta(hours=2),
+                               "departure_at": d}) == {}
+
+
+def test_repositionnement_en_rade_pas_une_sortie(env):
+    """Mouvement bref en rade (évitage, changement de poste de mouillage) puis revu au mouillage sans avoir
+    accosté : la sortie de mouillage est annulée, le navire reste compté en rade."""
+    cfg, store, etat = env
+    m = "214"
+    store.creer_escale(m, None)
+    store.commit()
+    suivre(cfg, store, etat, m, fiche(m, LOIN, "Underway using Engine", 14, T0), T0)
+    t_m = T0 + timedelta(hours=30)
+    suivre(cfg, store, etat, m, fiche(m, ZONE, "At Anchor", 0.1, t_m), t_m)
+    t_b = t_m + timedelta(hours=5)
+    suivre(cfg, store, etat, m, fiche(m, ZONE - 0.02, "Underway using Engine", 4, t_b), t_b)
+    assert store._q("select anchorage_exit_at from escales where mmsi = %s", (m,), un=True)["anchorage_exit_at"] == t_b
+    t_r = t_b + timedelta(minutes=40)
+    suivre(cfg, store, etat, m, fiche(m, ZONE - 0.02, "At Anchor", 0.1, t_r), t_r)
+    assert store._q("select anchorage_exit_at from escales where mmsi = %s", (m,), un=True)["anchorage_exit_at"] is None
+    assert en_rade(store, t_r + timedelta(hours=1)) == 1

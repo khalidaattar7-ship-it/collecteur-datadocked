@@ -6,6 +6,7 @@
   python -m app.collecteur estimer [--heures 24]     plan, niveaux, projection jour / mois (0 appel)
   python -m app.collecteur precision                 fourchettes d'accostage (médiane, p90)
   python -m app.collecteur rejouer                   retraite api_raw (idempotence, 0 crédit)
+  python -m app.collecteur sorties [--executer]      rattrape les sorties de quai / mouillage ouvertes (0 crédit)
   python -m app.collecteur etat                      dépenses, escales, positions, suivi
   python -m app.collecteur ddl [--retention]         applique le schéma (+ job pg_cron de rétention)
   python -m app.collecteur polygones calibrer [--activer] [--export F.geojson]
@@ -34,7 +35,11 @@ import statistics
 import sys
 from collections import Counter
 
-from .boucles import Etat, fiche_location, traiter_area, traiter_location, traiter_port_calls, txt
+from datetime import timedelta
+
+from .boucles import (Etat, fiche_location, parse_dd, rattrapage_sorties, traiter_area, traiter_location,
+                      traiter_port_calls, txt)
+from .config import PORT_LOCODE
 from .client import ClientDD
 from . import congestion as cong
 from . import polygones as pg
@@ -192,6 +197,64 @@ def _dispatcher(store, etat, cfg, endpoint, params, corps, t) -> dict:
         return {"ignore": f"pas d'escale ouverte pour {mmsi}"}
     e = next((x for x in store.escales_ouvertes() if x["escale_id"] == e["escale_id"]), e)
     return traiter_location(store, etat, cfg, e, corps, t)
+
+
+def cmd_sorties(args, cfg) -> int:
+    """Rattrapage des sorties de quai / de mouillage restées ouvertes (0 crédit) : horodatages déjà extraits
+    d'api_raw (departure_at = atdUtc ou repli, berth_entry_at = 1er Moored à quai) ; pour une escale partie
+    sans departure_at, l'atdUtc est relu dans les réponses get-vessel-location archivées."""
+    store, _, _ = _ctx(cfg)
+    escales = store._q("""
+        select * from escales
+        where (berth_entry_at is not null and berth_exit_at is null)
+           or (anchorage_entry_at is not null and anchorage_exit_at is null)
+        order by escale_id""", tous=True)
+    n, sans_fin = 0, []
+    for e in escales:
+        t_brut = None
+        if e["statut"] == "departed" and e["departure_at"] is None:
+            debut = min(t for t in (e.get("arrivee_utc"), e.get("premiere_obs"), e["created_at"]) if t)
+            for r in store._q("""select corps from api_raw where endpoint = 'get-vessel-location'
+                                   and statut_appel in ('recue', 'importe') and params->>'imo_or_mmsi' = %s
+                                 order by captured_at""", (e["mmsi"],), tous=True):
+                f = fiche_location(r["corps"]) or {}
+                atd = parse_dd(f.get("atdUtc"))
+                if txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd is not None and atd > debut - timedelta(hours=1):
+                    t_brut = atd
+                    break
+        maj = rattrapage_sorties(e, t_brut)
+        if not maj:
+            if e["statut"] in ("departed", "abandoned", "hors_perimetre"):
+                sans_fin.append((e["escale_id"], e["statut"]))
+            continue
+        n += 1
+        print(f"  escale {e['escale_id']:4} {e['statut']:10} " + ", ".join(f"{k} = {v:%Y-%m-%d %H:%M}" for k, v in maj.items())
+              + (" (atdUtc relu dans api_raw)" if t_brut is not None else ""))
+        if args.executer:
+            store.maj_escale(e["escale_id"], **maj)
+    # Fausses sorties de mouillage : navire jamais accosté, revu « At Anchor » dans la zone APRÈS la sortie
+    # enregistrée (repositionnement en rade) -> sortie annulée, comme en direct.
+    fausses = store._q("""
+        select e.escale_id, e.anchorage_exit_at, p.position_received, p.nav_status
+        from escales e
+        join lateral (select position_received, nav_status, distance_to_port_km from positions q
+                      where q.escale_id = e.escale_id order by position_received desc limit 1) p on true
+        where e.statut = 'anchored' and e.berth_entry_at is null and e.anchorage_exit_at is not null
+          and p.position_received > e.anchorage_exit_at and p.nav_status like 'At Anchor%%'
+          and p.distance_to_port_km <= %s
+        order by e.escale_id""", (cfg.regles.rade_km,), tous=True)
+    for f in fausses:
+        print(f"  escale {f['escale_id']:4} anchored   anchorage_exit_at {f['anchorage_exit_at']:%Y-%m-%d %H:%M} annulée "
+              f"(revu {f['nav_status']} le {f['position_received']:%Y-%m-%d %H:%M})")
+        if args.executer:
+            store.maj_escale(f["escale_id"], anchorage_exit_at=None)
+            store.evenement_supprimer(f["escale_id"], "sortie_mouillage")
+    if args.executer:
+        store.commit()
+    print(f"{len(escales)} escales à séjour ouvert ; {n} corrigées ; {len(fausses)} fausse(s) sortie(s) de mouillage "
+          f"annulée(s){'' if args.executer else ' (ESTIMATION, rien écrit)'} ; "
+          f"fermées sans heure de fin connue : {sans_fin or 'aucune'}")
+    return 0
 
 
 def cmd_rejouer(args, cfg) -> int:
@@ -380,6 +443,7 @@ def main() -> None:
     e = sub.add_parser("estimer"); e.add_argument("--heures", type=float, default=24.0); e.set_defaults(f=cmd_estimer)
     sub.add_parser("precision").set_defaults(f=cmd_precision)
     sub.add_parser("rejouer").set_defaults(f=cmd_rejouer)
+    so = sub.add_parser("sorties"); so.add_argument("--executer", action="store_true"); so.set_defaults(f=cmd_sorties)
     sub.add_parser("etat").set_defaults(f=cmd_etat)
     pp = sub.add_parser("polygones")
     pp.add_argument("action", choices=("calibrer", "valider", "activer"))

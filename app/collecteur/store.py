@@ -212,6 +212,9 @@ class Store:
                 (escale_id, type_, ts, confiance, json.dumps(signaux, ensure_ascii=False, default=str)))
         return True
 
+    def evenement_supprimer(self, escale_id: int, type_: str) -> None:
+        self._q("delete from evenements where escale_id = %s and type = %s", (escale_id, type_))
+
     def evenement_remplacer(self, escale_id: int, type_: str, ts, confiance: str, signaux: dict) -> None:
         """Pour un événement qui peut être CORRIGÉ (arrivee : nouvelle entrée de la chaîne)."""
         self._q("delete from evenements where escale_id = %s and type = %s", (escale_id, type_))

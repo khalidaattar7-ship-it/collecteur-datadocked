@@ -1,7 +1,8 @@
 """Tests du collecteur — ZÉRO crédit : l'API Data Docked est simulée (httpx.MockTransport) avec
-des réponses réelles déjà reçues (C:\\poragent_data), la base est un schéma jetable.
+des réponses réelles déjà reçues (dossier local COLLECTOR_TEST_DONNEES, non versionné), la base est un
+schéma jetable.
 
-    COLLECTOR_DB_DSN=... python -m pytest api/tests_collecteur -q
+    COLLECTOR_DB_DSN=... COLLECTOR_TEST_DONNEES=... python -m pytest tests -q
 """
 import json
 import os
@@ -19,12 +20,13 @@ from app.collecteur.scheduler import EtatDB, Scheduler, plan
 from app.collecteur.store import Store
 from app.collecteur.types_navires import VESSEL_TYPE_MAPPING, classer
 
-DONNEES = Path(r"C:\poragent_data\datadocked_temps_reel")
+DONNEES = Path(os.getenv("COLLECTOR_TEST_DONNEES") or "donnees_absentes")
 EXPECTED = DONNEES / "brut" / "20261109T180957_port-calls_MACAS_expected_p1.json"
-LOCATION = sorted((DONNEES / "suivi_elargi_20261111" / "brut").glob("*loc_suivi*"))[-1]
+LOCATION = (sorted((DONNEES / "suivi_elargi_20261111" / "brut").glob("*loc_suivi*")) or [DONNEES / "absent"])[-1]
 AREA = DONNEES / "brut" / "20261109T180947_area_MACAS_50km.json"
 DSN = os.getenv("COLLECTOR_DB_DSN")
-pytestmark = pytest.mark.skipif(not DSN, reason="COLLECTOR_DB_DSN absente")
+pytestmark = [pytest.mark.skipif(not DSN, reason="COLLECTOR_DB_DSN absente"),
+              pytest.mark.skipif(not EXPECTED.exists(), reason="COLLECTOR_TEST_DONNEES absent")]
 
 
 def charger(p: Path):
