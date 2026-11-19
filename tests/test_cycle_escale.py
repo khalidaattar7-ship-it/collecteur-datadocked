@@ -326,3 +326,17 @@ def test_repositionnement_en_rade_pas_une_sortie(env):
     suivre(cfg, store, etat, m, fiche(m, ZONE - 0.02, "At Anchor", 0.1, t_r), t_r)
     assert store._q("select anchorage_exit_at from escales where mmsi = %s", (m,), un=True)["anchorage_exit_at"] is None
     assert en_rade(store, t_r + timedelta(hours=1)) == 1
+
+
+def test_entree_censuree(env):
+    """Indicateur fixé au 1er relevé : vrai si déjà à quai ou déjà au mouillage, faux sinon ; jamais réécrit."""
+    cfg, store, etat = env
+    for m, lat, ns, sog, attendu in (("221", QUAI, "Moored", 0.0, True), ("222", ZONE, "At Anchor", 0.1, True),
+                                     ("223", LOIN, "Underway using Engine", 14, False)):
+        store.creer_escale(m, None)
+        store.commit()
+        suivre(cfg, store, etat, m, fiche(m, lat, ns, sog, T0), T0)
+        assert store._q("select entree_censuree from escales where mmsi = %s", (m,), un=True)["entree_censuree"] is attendu
+    t = T0 + timedelta(hours=40)
+    suivre(cfg, store, etat, "223", fiche("223", QUAI, "Moored", 0.0, t), t)       # accostage observé ensuite
+    assert store._q("select entree_censuree from escales where mmsi = '223'", un=True)["entree_censuree"] is False

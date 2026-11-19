@@ -31,6 +31,9 @@ create table if not exists escales (
 );
 create index if not exists idx_escales_mmsi on escales (mmsi);
 create index if not exists idx_escales_statut on escales (statut);
+-- Entrée non observée : navire déjà au mouillage ou déjà à quai à son 1er relevé (NULL = pas encore relevé).
+-- Ses durées (mouillage, attente) sont alors tronquées à gauche.
+alter table escales add column if not exists entree_censuree boolean;
 
 -- Suivi d'une escale par le scheduler sans état local (cron) : phase, échéance, rafale.
 -- `etat` porte les compteurs de la machine à états (relevé précédent, confirmations…).

@@ -7,6 +7,7 @@
   python -m app.collecteur precision                 fourchettes d'accostage (médiane, p90)
   python -m app.collecteur rejouer                   retraite api_raw (idempotence, 0 crédit)
   python -m app.collecteur sorties [--executer]      rattrape les sorties de quai / mouillage ouvertes (0 crédit)
+  python -m app.collecteur censure [--executer]      rattrape l'indicateur d'entrée censurée (0 crédit)
   python -m app.collecteur etat                      dépenses, escales, positions, suivi
   python -m app.collecteur ddl [--retention]         applique le schéma (+ job pg_cron de rétention)
   python -m app.collecteur polygones calibrer [--activer] [--export F.geojson]
@@ -37,8 +38,8 @@ from collections import Counter
 
 from datetime import timedelta
 
-from .boucles import (Etat, fiche_location, parse_dd, rattrapage_sorties, traiter_area, traiter_location,
-                      traiter_port_calls, txt)
+from .boucles import (Etat, classer_position, fiche_location, parse_dd, rattrapage_sorties, traiter_area,
+                      traiter_location, traiter_port_calls, txt)
 from .config import PORT_LOCODE
 from .client import ClientDD
 from . import congestion as cong
@@ -257,6 +258,33 @@ def cmd_sorties(args, cfg) -> int:
     return 0
 
 
+def cmd_censure(args, cfg) -> int:
+    """Rattrapage de `entree_censuree` (0 crédit) : 1re position relevée de chaque escale (extraite d'api_raw),
+    classée avec les polygones actifs et la même règle qu'en direct (déjà au mouillage ou déjà à quai)."""
+    store, _, _ = _ctx(cfg)
+    lignes = store.polygones_actifs()
+    polys = pg.Polygones.depuis_lignes(lignes) if lignes else pg.Polygones()
+    rows = store._q("""
+        select e.escale_id, p.position_received, p.lat, p.lon, p.sog, p.nav_status, p.distance_to_port_km
+        from escales e
+        join lateral (select * from positions q where q.escale_id = e.escale_id
+                      order by q.position_received limit 1) p on true
+        where e.entree_censuree is null order by e.escale_id""", tous=True)
+    n_vrai = 0
+    for r in rows:
+        c_ = classer_position(cfg, polys, float(r["lat"]), float(r["lon"]), float(r["distance_to_port_km"]),
+                              r["nav_status"] or "", None if r["sog"] is None else float(r["sog"]))
+        v = bool(c_["a_quai"] or c_["en_rade"])
+        n_vrai += v
+        if args.executer:
+            store.maj_escale(r["escale_id"], entree_censuree=v)
+    if args.executer:
+        store.commit()
+    print(f"{len(rows)} escales sans indicateur ; entrée censurée : {n_vrai}, observée : {len(rows) - n_vrai}"
+          f"{'' if args.executer else ' (ESTIMATION, rien écrit)'}")
+    return 0
+
+
 def cmd_rejouer(args, cfg) -> int:
     """Retraite toutes les réponses archivées avec un état JETABLE. Attendu : rien de nouveau."""
     store, _, _ = _ctx(cfg)
@@ -444,6 +472,7 @@ def main() -> None:
     sub.add_parser("precision").set_defaults(f=cmd_precision)
     sub.add_parser("rejouer").set_defaults(f=cmd_rejouer)
     so = sub.add_parser("sorties"); so.add_argument("--executer", action="store_true"); so.set_defaults(f=cmd_sorties)
+    ce = sub.add_parser("censure"); ce.add_argument("--executer", action="store_true"); ce.set_defaults(f=cmd_censure)
     sub.add_parser("etat").set_defaults(f=cmd_etat)
     pp = sub.add_parser("polygones")
     pp.add_argument("action", choices=("calibrer", "valider", "activer"))

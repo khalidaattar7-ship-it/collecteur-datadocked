@@ -330,6 +330,30 @@ def cadence_diagnostic(loc: dict, t: datetime, statut: Optional[str] = None) -> 
     return max(1, round(s / 60)) if s else int(cad)
 
 
+def classer_position(cfg: Config, polys: Optional[Polygones], la: float, lo: float, dist: float,
+                     ns: str, sog: Optional[float]) -> dict:
+    """Classification d'une position : zone, à quai, en rade (même règle en direct et au rattrapage)."""
+    r = cfg.regles
+    en_zone = dist <= r.rade_km
+    ns1 = premier_token(ns or "")                   # parité ANP : 1re valeur d'un champ multiple
+    bouge = _bouge(sog, ns1, r.sog_mouvement)
+    if polys is not None and not polys.vide:
+        # CLASSIFICATION POLYGONALE : à quai = Moored ∧ QUAI (ou bassin tant que les quais
+        # ne sont pas tous cartographiés) ; en rade = At Anchor ∧ RADE.
+        zone = polys.zone(la, lo)
+        dans_port = zone in ("quai", "port")
+        a_quai = ns1 == "Moored" and dans_port and not bouge
+        en_rade = ns1 == "At Anchor" and zone == "rade" and not bouge
+    else:
+        # Repli sans polygones (amorçage) : règles de distance.
+        zone = None
+        dans_port = dist <= r.quai_km
+        a_quai = ns1 == "Moored" and dist <= r.quai_km and not bouge
+        en_rade = en_zone and not bouge
+    return {"en_zone": en_zone, "ns1": ns1, "bouge": bouge, "zone": zone, "dans_port": dans_port,
+            "a_quai": a_quai, "en_rade": en_rade}
+
+
 def fin_mouillage(ae: datetime, be: Optional[datetime], t_fin: datetime) -> datetime:
     """Sortie du mouillage restée ouverte : l'accostage s'il suit le mouillage, sinon la fin d'escale."""
     return be if be is not None and be >= ae else max(t_fin, ae)
@@ -458,22 +482,12 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
             sortie["evenements"].append(type_)
 
     if plus_recente:
-        en_zone = dist <= r.rade_km
-        ns1 = premier_token(ns)                     # parité ANP : 1re valeur d'un champ multiple
-        bouge = _bouge(sog, ns1, r.sog_mouvement)
-        if polys is not None and not polys.vide:
-            # CLASSIFICATION POLYGONALE : à quai = Moored ∧ QUAI (ou bassin tant que les quais
-            # ne sont pas tous cartographiés) ; en rade = At Anchor ∧ RADE.
-            zone = polys.zone(la, lo)
-            dans_port = zone in ("quai", "port")
-            a_quai = ns1 == "Moored" and dans_port and not bouge
-            en_rade = ns1 == "At Anchor" and zone == "rade" and not bouge
-        else:
-            # Repli sans polygones (amorçage) : règles de distance.
-            zone = None
-            dans_port = dist <= r.quai_km
-            a_quai = ns1 == "Moored" and dist <= r.quai_km and not bouge
-            en_rade = en_zone and not bouge
+        c_ = classer_position(cfg, polys, la, lo, dist, ns, sog)
+        en_zone, ns1, bouge = c_["en_zone"], c_["ns1"], c_["bouge"]
+        zone, dans_port, a_quai, en_rade = c_["zone"], c_["dans_port"], c_["a_quai"], c_["en_rade"]
+        if escale.get("entree_censuree") is None:
+            # 1er relevé de l'escale : déjà au mouillage ou déjà à quai -> entrée NON observée (censurée).
+            maj["entree_censuree"] = bool(a_quai or en_rade)
         loc.setdefault("vu_port", False)
         loc["en_zone"] = loc["en_zone"] or en_zone
         loc["min_dist"] = dist if loc["min_dist"] is None else min(loc["min_dist"], dist)
