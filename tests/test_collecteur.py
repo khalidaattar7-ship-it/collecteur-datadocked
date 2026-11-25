@@ -74,6 +74,9 @@ def env(monkeypatch):
     store = Store(DSN, schema)
     store.appliquer_ddl()
     cfg = Config(schema=schema)
+    # Solde simulé à 1 000 par FakeDD : réserve à 0 pour que le mode survie (testé dans
+    # test_budget_solde.py) ne change pas le périmètre de ces tests.
+    cfg.plafonds.reserve_solde = 0
     journal = JournalDB(DSN, schema)
     yield cfg, store, journal
     journal.fermer()

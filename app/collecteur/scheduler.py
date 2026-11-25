@@ -7,9 +7,12 @@ temps imparti. Tout l'état (phase, échéances, horloges, journal) est en base 
 consultatif est pris par l'appelant (__main__.cmd_tick).
 
 DÉGRADATION PRIORISÉE (config.NIVEAUX) : on prend le niveau le plus fin dont la projection
-tient sous la CIBLE mensuelle (25 000) et sous le plafond jour. L'échelle élargit d'abord les
-sweeps in-port, puis la rafale, puis l'approche au large, et l'approche finale LINER en
-dernier. Le blocage dur reste le garde-fou (plafonds jour / mois sur la dépense réelle).
+tient sous la CIBLE mensuelle (25 000), sous le plafond jour ET, si le solde est connu, dont la
+dépense projetée jusqu'au prochain renouvellement de l'abonnement tient dans (solde − réserve).
+L'échelle élargit d'abord les sweeps in-port, puis la rafale, puis l'approche au large, et
+l'approche finale LINER en dernier ; deux niveaux de survie ralentissent encore à l'approche de
+zéro. Sous la réserve : mode survie (LINER seuls, niveau le plus large). Le blocage dur reste le
+garde-fou (plafonds jour / mois sur la dépense réelle, solde < coût d'un appel).
 """
 import calendar
 import math
@@ -111,11 +114,19 @@ def dus_denses(escales: list[dict], etat: "Etat", t: datetime) -> tuple[list[dic
     return dus, prochaine
 
 
-def eligible(cfg: Config, e: dict, loc: dict) -> bool:
+def flux_b_termine(cfg: Config, t: Optional[datetime] = None) -> bool:
+    """Suivi in-port des non-LINER (flux B) arrêté à cfg.fin_flux_b."""
+    return cfg.fin_flux_b is not None and (t or maintenant()) >= cfg.fin_flux_b
+
+
+def eligible(cfg: Config, e: dict, loc: dict, t: Optional[datetime] = None) -> bool:
     """LINER : toujours (approche + port). Autre commerce : seulement en zone portuaire, ou
-    amorcé par la découverte / arrival (pas encore positionné, sans ETA d'expected)."""
+    amorcé par la découverte / arrival (pas encore positionné, sans ETA d'expected), et jamais
+    après la fin du flux B."""
     if e.get("categorie") == "LINER":
         return True
+    if flux_b_termine(cfg, t):
+        return False
     if loc.get("en_zone") or (e.get("min_dist") is not None and e["min_dist"] <= cfg.regles.rade_km):
         return True
     return e.get("dern_dist") is None and e.get("expected_eta") is None
@@ -166,7 +177,7 @@ def plan(cfg: Config, escales: list[dict], etat: Etat, heures: float, niveau: in
          max_navires: Optional[int] = None, t0: Optional[datetime] = None, borne_haute: bool = True) -> dict:
     t0 = t0 or maintenant()
     fin = t0 + timedelta(hours=heures)
-    sel = selectionner([e for e in escales if eligible(cfg, e, etat.escale(e["escale_id"]))], etat, max_navires)
+    sel = selectionner([e for e in escales if eligible(cfg, e, etat.escale(e["escale_id"]), t0)], etat, max_navires)
     navires, appels_loc = [], 0
     for e in sel:
         n, cad, phase = _appels_escale(cfg, e, etat.escale(e["escale_id"]), niveau, t0, fin, borne_haute)
@@ -207,26 +218,77 @@ def selectionner(escales: list[dict], etat: Etat, max_navires: Optional[int]) ->
     return s if max_navires is None else s[:max_navires]
 
 
-def projection(cfg: Config, journal, escales, etat, t: Optional[datetime] = None) -> dict:
+def prochain_renouvellement(t: datetime, jour: int) -> datetime:
+    """Prochain renouvellement de l'abonnement : jour `jour` du mois à 23:59:59 UTC (heure exacte
+    inconnue : la fin de journée est l'hypothèse prudente, horizon le plus long)."""
+    def au(annee, mois):
+        j = min(jour, calendar.monthrange(annee, mois)[1])
+        return t.replace(year=annee, month=mois, day=j, hour=23, minute=59, second=59, microsecond=0)
+    r = au(t.year, t.month)
+    if r <= t:
+        r = au(t.year + (t.month == 12), t.month % 12 + 1)
+    return r
+
+
+def besoin_jusqu_au_renouvellement(par_jour: float, par_jour_apres_b: Optional[float], t: datetime,
+                                   renouvellement: datetime, fin_flux_b: Optional[datetime]) -> float:
+    """Crédits projetés de t au renouvellement. Si le flux B s'arrête avant, la dépense « tous
+    navires » ne court que jusqu'à sa fin, puis la dépense LINER seule prend le relais."""
+    h = max((renouvellement - t).total_seconds() / 3600, 0.0)
+    if par_jour_apres_b is not None and fin_flux_b is not None and t < fin_flux_b < renouvellement:
+        h_b = (fin_flux_b - t).total_seconds() / 3600
+        return par_jour / 24 * h_b + par_jour_apres_b / 24 * (h - h_b)
+    return par_jour / 24 * h
+
+
+def projection(cfg: Config, journal, escales, etat, t: Optional[datetime] = None,
+               solde: Optional[int] = None) -> dict:
     """Niveau le plus fin dont la projection (dépense réelle + plan réaliste 24 h × heures
-    restantes) tient sous la cible mensuelle et le plafond jour."""
+    restantes) tient sous la cible mensuelle et le plafond jour, et, solde connu, dont la dépense
+    projetée jusqu'au prochain renouvellement tient dans (solde − réserve)."""
     t = t or maintenant()
     tot = journal.totaux(t=t)
     jours = calendar.monthrange(t.year, t.month)[1]
     h_mois = (t.replace(day=jours, hour=23, minute=59, second=59) - t).total_seconds() / 3600
     h_jour = (t.replace(hour=23, minute=59, second=59) - t).total_seconds() / 3600
+    renouv = prochain_renouvellement(t, cfg.plafonds.jour_renouvellement)
+    disponible = None if solde is None else solde - cfg.plafonds.reserve_solde
+    b_en_cours = cfg.fin_flux_b is not None and t < cfg.fin_flux_b < renouv
+    liner = [e for e in escales if e.get("categorie") == "LINER"] if b_en_cours else None
+    info_solde = None if solde is None else {"solde": solde, "reserve": cfg.plafonds.reserve_solde,
+                                             "renouvellement": renouv.isoformat(),
+                                             "fin_flux_b": cfg.fin_flux_b.isoformat() if cfg.fin_flux_b else None}
     lignes = []
     for niveau in range(len(cfg.cadences.niveaux)):
         p = plan(cfg, escales, etat, 24.0, niveau, t0=t, borne_haute=False)
         par_j = p["credits_total"] + PROVISION_RAFALES_JOUR
         pm = tot["mois"] + par_j / 24 * h_mois
         pj = tot["jour"] + par_j / 24 * h_jour
-        lignes.append({"niveau": niveau, "cadences": cfg.cadences.niveaux[niveau], "par_jour": round(par_j),
-                       "projection_mois": round(pm), "projection_jour": round(pj)})
-        if pm <= cfg.plafonds.cible_mois and pj <= cfg.plafonds.jour:
-            return {"niveau": niveau, "lignes": lignes, "depense": tot}
-    return {"niveau": len(cfg.cadences.niveaux) - 1, "lignes": lignes, "depense": tot,
-            "alerte": "projection > cible même au niveau le plus large : le blocage dur (garde-fou) protégera"}
+        ligne = {"niveau": niveau, "cadences": cfg.cadences.niveaux[niveau], "par_jour": round(par_j),
+                 "projection_mois": round(pm), "projection_jour": round(pj)}
+        ok_solde = True
+        if disponible is not None:
+            apres_b = None
+            if liner is not None:
+                apres_b = plan(cfg, liner, etat, 24.0, niveau, t0=t, borne_haute=False)["credits_total"] \
+                    + PROVISION_RAFALES_JOUR
+            besoin = besoin_jusqu_au_renouvellement(par_j, apres_b, t, renouv, cfg.fin_flux_b)
+            ligne["besoin_renouvellement"] = round(besoin)
+            ok_solde = besoin <= disponible
+        lignes.append(ligne)
+        if pm <= cfg.plafonds.cible_mois and pj <= cfg.plafonds.jour and ok_solde:
+            return {"niveau": niveau, "lignes": lignes, "depense": tot, "solde": info_solde}
+    alerte = "projection > cible même au niveau le plus large : le blocage dur (garde-fou) protégera"
+    if disponible is not None and not ok_solde:
+        alerte = (f"solde {solde} insuffisant jusqu'au renouvellement ({renouv:%d/%m}) même au niveau le plus "
+                  f"large : collecte au niveau de survie")
+    return {"niveau": len(cfg.cadences.niveaux) - 1, "lignes": lignes, "depense": tot, "solde": info_solde,
+            "alerte": alerte}
+
+
+def mode_survie(cfg: Config, solde: Optional[int]) -> bool:
+    """Solde passé sous la réserve : seuls les LINER restent suivis, au niveau le plus large."""
+    return solde is not None and solde <= cfg.plafonds.reserve_solde
 
 
 # ------------------------------------------------------------------------------- boucle
@@ -294,7 +356,8 @@ class Scheduler:
                 n += 1
         if n:
             self.store.commit()
-            self.log(f"  {n} escale(s) non-LINER hors zone fermée(s) : hors_perimetre (0 crédit)")
+            pourquoi = "fin du flux B (suivi in-port non-LINER arrêté)" if flux_b_termine(self.cfg) else "hors zone"
+            self.log(f"  {n} escale(s) non-LINER fermée(s), {pourquoi} : hors_perimetre (0 crédit)")
         return n
 
     # -- suivi --------------------------------------------------------------------------
@@ -354,6 +417,9 @@ class Scheduler:
         t = maintenant()
         premiere = self.etat.horloge("premiere_session")
         qualite = "bootstrap" if premiere is None or t - premiere < timedelta(hours=48) else "ok"
+        if qualite == "ok" and flux_b_termine(self.cfg, t):
+            # Rupture de mesure : sans suivi des non-LINER, rade / quai ne comptent plus que les LINER.
+            qualite = "liner_seul"
         n = cong.recalculer(self.store, t - timedelta(hours=3), t, qualite)
         slot = t.astimezone(CASA).replace(minute=0, second=0, microsecond=0)
         if self.etat.d["horloges"].get("congestion_slot") != slot.isoformat():
@@ -377,8 +443,16 @@ class Scheduler:
         self.etat.charger(e["escale_id"] for e in ouvertes)
         eligibles = [e for e in ouvertes
                      if eligible(self.cfg, e, self.etat.d["escales"].get(str(e["escale_id"]), {}))]
-        pr = projection(self.cfg, self.journal, eligibles, self.etat, t0)
-        niveau = pr["niveau"]
+        # Solde (my-credits, 0 crédit) : contrainte de dégradation jusqu'au renouvellement.
+        solde = self.client.solde() if self.client is not None else None
+        survie = mode_survie(self.cfg, solde)
+        if survie:
+            eligibles = [e for e in eligibles if e.get("categorie") == "LINER"]
+        pr = projection(self.cfg, self.journal, eligibles, self.etat, t0, solde)
+        niveau = len(self.cfg.cadences.niveaux) - 1 if survie else pr["niveau"]
+        if survie:
+            pr["alerte"] = (f"MODE SURVIE : solde {solde} <= réserve {self.cfg.plafonds.reserve_solde}, LINER seuls "
+                            f"au niveau {niveau}")
         dus = [e for e in selectionner(eligibles, self.etat, None)
                if e.get("next_due_at") is None or e["next_due_at"] <= t0]
         cout_boucles = sum(COUT["get-vessels-by-area"] if n == "decouverte" else COUT["port-calls-by-port"]
@@ -386,7 +460,8 @@ class Scheduler:
         rapport = {"t": t0.isoformat(), "niveau": niveau, "cadences": self.cfg.cadences.niveaux[niveau],
                    "boucles_dues": dus_boucles, "escales_ouvertes": len(ouvertes), "suivables": len(eligibles),
                    "location_dus": len(dus), "cout_estime_passe": cout_boucles + len(dus),
-                   "projection": pr["lignes"][-1], "depense": pr["depense"], "alerte": pr.get("alerte")}
+                   "projection": pr["lignes"][-1], "depense": pr["depense"], "alerte": pr.get("alerte"),
+                   "solde": pr.get("solde"), "survie": survie}
         if not executer:
             rapport["dus_detail"] = [(e["escale_id"], e.get("name"), e.get("categorie"), e["statut"],
                                       e.get("phase_suivi")) for e in dus]
@@ -406,6 +481,8 @@ class Scheduler:
             ouvertes = self.store.escales_ouvertes()
             self.etat.charger(e["escale_id"] for e in ouvertes)
             eligibles = [e for e in ouvertes if eligible(self.cfg, e, self.etat.escale(e["escale_id"]))]
+            if survie:
+                eligibles = [e for e in eligibles if e.get("categorie") == "LINER"]
             n = 0
             for e in selectionner(eligibles, self.etat, None):
                 if e.get("next_due_at") is not None and e["next_due_at"] > maintenant():

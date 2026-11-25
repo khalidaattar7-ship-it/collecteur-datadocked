@@ -5,6 +5,7 @@ Aucun secret ici. Clé API : DATADOCKED_API_KEY ; base : COLLECTOR_DB_DSN ou SUP
 """
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -59,6 +60,11 @@ class Plafonds:
     cible_mois: int = field(default_factory=lambda: _env_int("COLLECTOR_CIBLE_MOIS", 25_000))
     # Garde-fou anti-emballement d'UNE passe (plafond de session du client).
     tick: int = field(default_factory=lambda: _env_int("COLLECTOR_PLAFOND_TICK", 150))
+    # SOLDE (sécurité permanente) : la dégradation vise à ce que la dépense projetée jusqu'au
+    # prochain renouvellement de l'abonnement tienne dans (solde − réserve). Les crédits
+    # d'abonnement ne se reportent pas : sans cette contrainte, la collecte s'arrête net à zéro.
+    reserve_solde: int = field(default_factory=lambda: _env_int("COLLECTOR_RESERVE_SOLDE", 1_000))
+    jour_renouvellement: int = field(default_factory=lambda: _env_int("COLLECTOR_JOUR_RENOUVELLEMENT", 18))
 
 
 # Échelle de DÉGRADATION PRIORISÉE, du plus fin au plus large :
@@ -82,7 +88,21 @@ NIVEAUX = (
     {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 20},  # 5
     {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 40},  # 6 : approche finale, en dernier
     {"quai": 240, "rade": 240, "rafale": 15, "loin": 180, "proche": 60},  # 7
+    # Niveaux de SURVIE (solde proche de zéro) : ralentir encore plutôt que s'arrêter net.
+    {"quai": 480, "rade": 480, "rafale": 15, "loin": 360, "proche": 60},  # 8
+    {"quai": 720, "rade": 720, "rafale": 15, "loin": 720, "proche": 120}, # 9
 )
+
+
+def _env_date(nom: str) -> Optional[datetime]:
+    """Date ISO 8601 avec fuseau ; vide ou « aucune » -> None."""
+    v = (os.getenv(nom) or "").strip()
+    if not v or v.lower() == "aucune":
+        return None
+    d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if d.tzinfo is None:
+        raise ValueError(f"{nom} : fuseau horaire obligatoire ({v})")
+    return d
 
 
 @dataclass
@@ -126,6 +146,9 @@ class Config:
     frequences: Frequences = field(default_factory=Frequences)
     regles: ReglesSuivi = field(default_factory=ReglesSuivi)
     schema: str = SCHEMA
+    # Fin du suivi in-port des navires NON-LINER (flux B, étude de recalibrage) : à partir de cette
+    # date, seuls les LINER sont suivis ; les escales non-LINER ouvertes sont fermées. None = pas de fin.
+    fin_flux_b: Optional[datetime] = field(default_factory=lambda: _env_date("COLLECTOR_FIN_FLUX_B"))
     # Durée max d'une passe : le cron passe toutes les 5 min, une passe doit finir avant.
     duree_tick_s: int = field(default_factory=lambda: _env_int("COLLECTOR_DUREE_TICK_S", 240))
     # Copie disque des réponses brutes (en plus d'api_raw) : utile en local seulement.

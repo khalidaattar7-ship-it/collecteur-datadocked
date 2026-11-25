@@ -157,9 +157,16 @@ def cmd_estimer(args, cfg) -> int:
     p = plan(cfg, escales, etat, args.heures, 0, borne_haute=False)
     print(f"Plan réaliste {args.heures:.0f} h, niveau 0 : location {p['appels_location']} cr ({len(p['navires'])} navires), "
           f"roster {p['credits_roster']}, découverte {p['credits_decouverte']} -> {p['credits_total']} cr")
-    for l in projection(cfg, journal, escales, etat)["lignes"]:
+    pr = projection(cfg, journal, escales, etat, solde=args.solde)
+    if pr.get("solde"):
+        s = pr["solde"]
+        print(f"Solde {s['solde']} (réserve {s['reserve']}), renouvellement {s['renouvellement'][:16]} UTC, "
+              f"fin du flux B {s['fin_flux_b'] or 'aucune'}")
+    for l in pr["lignes"]:
+        b = f", besoin jusqu'au renouvellement {l['besoin_renouvellement']}" if "besoin_renouvellement" in l else ""
         print(f"  niveau {l['niveau']} : {l['par_jour']} cr/jour, fin de journée {l['projection_jour']}, "
-              f"fin de mois {l['projection_mois']}")
+              f"fin de mois {l['projection_mois']}{b}")
+    print(f"  -> niveau retenu {pr['niveau']}{' — ' + pr['alerte'] if pr.get('alerte') else ''}")
     hypothese_regime(cfg)
     return 0
 
@@ -468,7 +475,9 @@ def main() -> None:
     t.add_argument("--max-appels", type=int)
     t.set_defaults(f=cmd_tick)
     d = sub.add_parser("ddl"); d.add_argument("--retention", action="store_true"); d.set_defaults(f=cmd_ddl)
-    e = sub.add_parser("estimer"); e.add_argument("--heures", type=float, default=24.0); e.set_defaults(f=cmd_estimer)
+    e = sub.add_parser("estimer"); e.add_argument("--heures", type=float, default=24.0)
+    e.add_argument("--solde", type=int, help="solde à simuler (contrainte jusqu'au renouvellement), 0 appel")
+    e.set_defaults(f=cmd_estimer)
     sub.add_parser("precision").set_defaults(f=cmd_precision)
     sub.add_parser("rejouer").set_defaults(f=cmd_rejouer)
     so = sub.add_parser("sorties"); so.add_argument("--executer", action="store_true"); so.set_defaults(f=cmd_sorties)
