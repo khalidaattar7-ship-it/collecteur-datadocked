@@ -12,6 +12,8 @@ from typing import Optional
 import psycopg2
 import psycopg2.extras
 
+from .tls import connecter
+
 # db/collecteur/ à la racine du dépôt : parents[3] dans le projet de modélisation (api/app/…),
 # parents[2] dans le dépôt autonome du collecteur (app/…).
 DDL_DIR = next((r / "db" / "collecteur" for r in Path(__file__).resolve().parents[2:4]
@@ -29,7 +31,7 @@ class Store:
         if not _IDENT.match(schema):
             raise ValueError(f"schéma invalide : {schema}")
         self.schema = schema
-        self.cx = psycopg2.connect(dsn)
+        self.cx = connecter(dsn)
         self.cx.autocommit = False
         with self.cx.cursor() as c:
             c.execute(f"set search_path to {schema}, public")

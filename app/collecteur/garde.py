@@ -22,6 +22,7 @@ from typing import Callable, Optional
 import psycopg2
 
 from .config import CLE_VERROU, Config
+from .tls import connecter
 
 
 class ArretCollecte(Exception):
@@ -46,7 +47,7 @@ class JournalDB:
     ligne « lance » est durable avant l'appel, quoi qu'il arrive à la transaction principale."""
 
     def __init__(self, dsn: str, schema: str):
-        self.cx = psycopg2.connect(dsn)
+        self.cx = connecter(dsn)
         self.cx.autocommit = True
         with self.cx.cursor() as c:
             c.execute(f"set search_path to {schema}, public")
@@ -127,7 +128,7 @@ class VerrouDB:
         self.dsn, self.cle, self.cx = dsn, cle, None
 
     def prendre(self) -> bool:
-        self.cx = psycopg2.connect(self.dsn)
+        self.cx = connecter(self.dsn)
         self.cx.autocommit = True
         with self.cx.cursor() as c:
             c.execute("select pg_try_advisory_lock(%s)", (self.cle,))
