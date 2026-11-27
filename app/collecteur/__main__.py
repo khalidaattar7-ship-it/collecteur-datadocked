@@ -101,6 +101,12 @@ def cmd_tick(args, cfg) -> int:
     try:
         store, etat, journal = _ctx(cfg)
         session = "tick-" + maintenant().strftime("%Y%m%dT%H%M%SZ")
+        if alertes.expire(cfg.plafonds.expiration_abonnement, maintenant()):
+            # Abonnement expiré (non renouvelé) : arrêt propre AVANT tout appel Data Docked (décision du 27/11/2026).
+            code = alertes.arret_expiration(store, session, cfg.plafonds.expiration_abonnement, maintenant())
+            _resume_github(f"### Passe {session}\n\n- {alertes.NOTE_EXPIRATION}")
+            journal.fermer()
+            return code
         client = ClientDD(cfg, cle_api(), journal, session, plafond_session=cfg.plafonds.tick, store=store)
         sch = Scheduler(cfg, client, store, etat, journal,
                         log=lambda m: print(f"[{maintenant():%H:%M:%S}] {m}", flush=True))
@@ -117,22 +123,33 @@ def cmd_tick(args, cfg) -> int:
         delta = solde0 - solde1 if None not in (solde0, solde1) else None
         bilan = (f"{r.get('motif')} | dépense de la passe (journal) {tot['session']} | solde {solde0} -> {solde1} "
                  f"(Δ {delta}) | jour {tot['jour']} / mois {tot['mois']} | {json.dumps(r.get('compteurs'), ensure_ascii=False)}")
-        # Alertes (27/11/2026) : blocage solde / mois en échec ; rappel d'expiration à J-3 et J-1 (échec 1 fois / jour).
+        # Alertes (27/11/2026) : blocage solde / mois en échec à la 1re passe bloquée de l'incident puis au plus
+        # 1 fois / jour ; rappel d'expiration à J-3 et J-1 (échec 1 fois / jour).
         t = maintenant()
+        jour0 = t.replace(hour=0, minute=0, second=0, microsecond=0)
         jours = alertes.jalon_expiration(cfg.plafonds.expiration_abonnement, t)
         rappel_en_echec = False
         if jours is not None:
             msg = alertes.message_rappel(cfg.plafonds.expiration_abonnement, jours)
             deja = store._q("select 1 from collecte_sessions where started_at >= %s and notes like %s limit 1",
-                            (t.replace(hour=0, minute=0, second=0, microsecond=0),
-                             f"%{msg} {alertes.MARQUE_ECHEC}%"), un=True)
+                            (jour0, f"%{msg} {alertes.MARQUE_ECHEC}%"), un=True)
             rappel_en_echec = deja is None
             bilan += f" | {msg}" + (f" {alertes.MARQUE_ECHEC}" if rappel_en_echec else "")
             print(f"::warning::{msg}")
-        code = alertes.code_sortie(code, r.get("blocage"), rappel_en_echec)
-        if code == alertes.CODE_BLOCAGE:
-            bilan += f" | ÉCHEC SIGNALÉ : blocage {r.get('blocage')}, collecte arrêtée"
-            print(f"::error::Collecte bloquée ({r.get('blocage')}) : {r.get('motif')}")
+        blocage_en_echec = False
+        if r.get("blocage") in alertes.BLOCAGES_EN_ECHEC:
+            prec = store._q("select notes from collecte_sessions where session <> %s and ended_at is not null "
+                            "order by started_at desc limit 1", (session,), un=True)
+            deja = store._q("select 1 from collecte_sessions where started_at >= %s and notes like %s limit 1",
+                            (jour0, f"%{alertes.MARQUE_BLOCAGE}%"), un=True)
+            blocage_en_echec = alertes.echec_blocage(r.get("blocage"), alertes.passe_bloquee((prec or {}).get("notes")),
+                                                     deja is not None)
+            if blocage_en_echec:
+                bilan += f" | {alertes.MARQUE_BLOCAGE} {r.get('blocage')}, collecte arrêtée"
+                print(f"::error::Collecte bloquée ({r.get('blocage')}) : {r.get('motif')}")
+            else:
+                bilan += f" | blocage {r.get('blocage')} toujours en cours (déjà signalé)"
+        code = alertes.code_sortie(code, blocage_en_echec, rappel_en_echec)
         store.session_fin(session, statut, bilan)
         print(bilan)
         _resume_github(f"### Passe {session}\n\n- {bilan}")
@@ -141,6 +158,20 @@ def cmd_tick(args, cfg) -> int:
     finally:
         verrou.rendre()
     return code
+
+
+def cmd_reactiver(args, cfg) -> int:
+    """Réactive le déclencheur pg_cron 004 après un arrêt d'expiration (0 crédit). Refusé tant que la date
+    d'expiration connue (COLLECTOR_EXPIRATION_ABONNEMENT) est dépassée : la mettre à jour d'abord."""
+    if alertes.expire(cfg.plafonds.expiration_abonnement, maintenant()):
+        print(f"Refusé : COLLECTOR_EXPIRATION_ABONNEMENT ({cfg.plafonds.expiration_abonnement}) est dépassée ; "
+              "renseigner la nouvelle date d'expiration (variable de dépôt) avant de réactiver.")
+        return 1
+    store = Store(dsn(), cfg.schema)
+    store._q("select cron.alter_job(jobid, active := true) from cron.job where jobname = %s", (alertes.JOB_DECLENCHEUR,))
+    store.commit()
+    print(f"Déclencheur pg_cron « {alertes.JOB_DECLENCHEUR} » réactivé ; prochaine passe dans <= 5 min.")
+    return 0
 
 
 # ------------------------------------------------------------------------------- 0 crédit
@@ -500,6 +531,7 @@ def main() -> None:
     so = sub.add_parser("sorties"); so.add_argument("--executer", action="store_true"); so.set_defaults(f=cmd_sorties)
     ce = sub.add_parser("censure"); ce.add_argument("--executer", action="store_true"); ce.set_defaults(f=cmd_censure)
     sub.add_parser("etat").set_defaults(f=cmd_etat)
+    sub.add_parser("reactiver").set_defaults(f=cmd_reactiver)
     pp = sub.add_parser("polygones")
     pp.add_argument("action", choices=("calibrer", "valider", "activer"))
     pp.add_argument("version", type=int, nargs="?")

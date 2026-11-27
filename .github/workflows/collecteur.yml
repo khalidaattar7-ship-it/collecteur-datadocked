@@ -41,8 +41,12 @@ jobs:
       - run: pip install -r requirements.txt
       # Codes de sortie (un échec déclenche l'e-mail de GitHub) :
       #   2 = arrêt de sûreté (solde illisible, débit anormal, base injoignable) ;
-      #   3 = BLOCAGE « solde » ou « mois » (collecte arrêtée ; décision du 27/11/2026) ;
-      #   4 = rappel d'expiration de l'abonnement à J-3 et J-1 (une passe en échec par jour).
+      #   3 = BLOCAGE « solde » ou « mois » : 1re passe bloquée d'un incident, puis au plus une fois par jour
+      #       (les autres passes bloquées sortent en 0 avec une note de journal) ;
+      #   4 = rappel d'expiration de l'abonnement à J-3 et J-1 (une passe en échec par jour) ;
+      #   5 = ARRÊT PROPRE à l'expiration : déclencheur pg_cron 004 désactivé, session « collecte arrêtée —
+      #       abonnement expiré » ; les passes suivantes sortent en 0 sans appel. Réactiver : nouvelle
+      #       COLLECTOR_EXPIRATION_ABONNEMENT puis `python -m app.collecteur reactiver`.
       # Les plafonds « jour » et « session » ne sont PAS des échecs : écrits dans le résumé de la passe.
       - name: Passe du collecteur
         env:
