@@ -468,7 +468,7 @@ class Scheduler:
             return rapport
         if self.etat.horloge("premiere_session") is None:
             self.etat.regler_horloge("premiere_session", t0)
-        motif = "passe complète"
+        motif, blocage = "passe complète", None
         try:
             for nom in dus_boucles:
                 if nom == "decouverte":
@@ -520,7 +520,8 @@ class Scheduler:
                     time.sleep(max(attente, 1))
         except RefusBudget as exc:
             motif = f"BLOCAGE ({exc.portee}) : {exc}"
+            blocage = exc.portee
         finally:
             self.etat.sauver()
-        rapport.update(motif=motif, compteurs=self.compteurs)
+        rapport.update(motif=motif, compteurs=self.compteurs, blocage=blocage)
         return rapport

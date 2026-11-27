@@ -38,13 +38,14 @@ from collections import Counter
 
 from datetime import timedelta
 
-from .boucles import (Etat, classer_position, fiche_location, parse_dd, rattrapage_sorties, traiter_area,
+from .boucles import (atd_recevable, Etat, classer_position, fiche_location, parse_dd, rattrapage_sorties, traiter_area,
                       traiter_location, traiter_port_calls, txt)
 from .config import PORT_LOCODE
 from .client import ClientDD
 from . import congestion as cong
 from . import polygones as pg
 from .config import COUT, Config, cle_api, dsn
+from . import alertes
 from .garde import ArretCollecte, JournalDB, VerrouDB, maintenant
 from .scheduler import PROVISION_RAFALES_JOUR, EtatDB, Scheduler, eligible, plan, projection
 from .store import Store
@@ -116,6 +117,22 @@ def cmd_tick(args, cfg) -> int:
         delta = solde0 - solde1 if None not in (solde0, solde1) else None
         bilan = (f"{r.get('motif')} | dépense de la passe (journal) {tot['session']} | solde {solde0} -> {solde1} "
                  f"(Δ {delta}) | jour {tot['jour']} / mois {tot['mois']} | {json.dumps(r.get('compteurs'), ensure_ascii=False)}")
+        # Alertes (27/11/2026) : blocage solde / mois en échec ; rappel d'expiration à J-3 et J-1 (échec 1 fois / jour).
+        t = maintenant()
+        jours = alertes.jalon_expiration(cfg.plafonds.expiration_abonnement, t)
+        rappel_en_echec = False
+        if jours is not None:
+            msg = alertes.message_rappel(cfg.plafonds.expiration_abonnement, jours)
+            deja = store._q("select 1 from collecte_sessions where started_at >= %s and notes like %s limit 1",
+                            (t.replace(hour=0, minute=0, second=0, microsecond=0),
+                             f"%{msg} {alertes.MARQUE_ECHEC}%"), un=True)
+            rappel_en_echec = deja is None
+            bilan += f" | {msg}" + (f" {alertes.MARQUE_ECHEC}" if rappel_en_echec else "")
+            print(f"::warning::{msg}")
+        code = alertes.code_sortie(code, r.get("blocage"), rappel_en_echec)
+        if code == alertes.CODE_BLOCAGE:
+            bilan += f" | ÉCHEC SIGNALÉ : blocage {r.get('blocage')}, collecte arrêtée"
+            print(f"::error::Collecte bloquée ({r.get('blocage')}) : {r.get('motif')}")
         store.session_fin(session, statut, bilan)
         print(bilan)
         _resume_github(f"### Passe {session}\n\n- {bilan}")
@@ -227,7 +244,7 @@ def cmd_sorties(args, cfg) -> int:
                                  order by captured_at""", (e["mmsi"],), tous=True):
                 f = fiche_location(r["corps"]) or {}
                 atd = parse_dd(f.get("atdUtc"))
-                if txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd is not None and atd > debut - timedelta(hours=1):
+                if txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd_recevable(atd, debut, e):
                     t_brut = atd
                     break
         maj = rattrapage_sorties(e, t_brut)

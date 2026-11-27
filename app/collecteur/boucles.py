@@ -354,6 +354,21 @@ def classer_position(cfg: Config, polys: Optional[Polygones], la: float, lo: flo
             "a_quai": a_quai, "en_rade": en_rade}
 
 
+def atd_recevable(atd: Optional[datetime], debut: Optional[datetime], escale: dict) -> bool:
+    """atdUtc (lastPort = MACAS) recevable comme départ DE CETTE escale.
+
+    - postérieur au début de l'escale, à 1 h près (escale ouverte après le départ réel) ;
+    - ET postérieur ou égal à toute entrée déjà enregistrée pour CETTE escale (mouillage, port, quai). Un atdUtc
+      antérieur appartient au port précédent : Data Docked peut renvoyer lastPort = MACAS avec l'atdUtc du départ
+      d'avant (XPRESS ATLAS, escale 136 : atd 16/11 10:27 = départ d'Algésiras, lu le 23/11 à quai ; même défaut
+      sur QUEEN VICTORIA 182 et VIKING JUPITER 85). Rejeté, l'escale attend la réponse suivante (atdUtc à jour)
+      ou le départ de repli."""
+    if atd is None or debut is None or atd <= debut - timedelta(hours=1):
+        return False
+    entrees = [escale.get(k) for k in ("anchorage_entry_at", "port_entry_at", "berth_entry_at") if escale.get(k)]
+    return not entrees or atd >= max(entrees)
+
+
 def fin_mouillage(ae: datetime, be: Optional[datetime], t_fin: datetime) -> datetime:
     """Sortie du mouillage restée ouverte : l'accostage s'il suit le mouillage, sinon la fin d'escale."""
     return be if be is not None and be >= ae else max(t_fin, ae)
@@ -520,8 +535,7 @@ def traiter_location(store, etat: Etat, cfg: Config, escale: dict, corps, t_appe
             store.evenement_remplacer(e_id, "sortie_port", pr, "sweep", _fourchette(loc["prec"], pr, t_appel, cad_avant))
             sortie["evenements"].append("sortie_port")
 
-        if (txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd is not None and debut is not None
-                and atd > debut - timedelta(hours=1)):
+        if txt(f.get("unlocodeLastport")) == PORT_LOCODE and atd_recevable(atd, debut, {**escale, **maj}):
             # Départ CONFIRMÉ par Data Docked : atdUtc fait autorité (aussi pour la sortie de quai).
             statut, phase, maj["departure_at"] = "departed", None, atd
             cloturer_sejours(escale, maj, atd)

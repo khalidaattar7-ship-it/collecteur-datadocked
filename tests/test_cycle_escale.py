@@ -340,3 +340,27 @@ def test_entree_censuree(env):
     t = T0 + timedelta(hours=40)
     suivre(cfg, store, etat, "223", fiche("223", QUAI, "Moored", 0.0, t), t)       # accostage observé ensuite
     assert store._q("select entree_censuree from escales where mmsi = '223'", un=True)["entree_censuree"] is False
+
+
+def test_atd_du_port_precedent_ne_ferme_pas_l_escale(env):
+    """Cas XPRESS ATLAS (136) : à quai, Data Docked renvoie lastPort = MACAS avec l'atdUtc du port précédent
+    (antérieur à l'accostage) -> l'escale reste à quai ; l'atdUtc à jour, lui, ferme l'escale."""
+    cfg, store, etat = env
+    m = "136"
+    store.creer_escale(m, None)
+    store.commit()
+    t = T0
+    suivre(cfg, store, etat, m, fiche(m, PROCHE, "Underway using Engine", 12, t - timedelta(minutes=2)), t)
+    t += timedelta(minutes=600)
+    s = suivre(cfg, store, etat, m, fiche(m, QUAI, "Moored", 0.0, t - timedelta(minutes=2)), t)
+    assert s["statut"] == "berthed"
+    vieux_atd = T0 + timedelta(minutes=10)                # après le début de l'escale, AVANT l'accostage
+    t += timedelta(minutes=600)
+    s = suivre(cfg, store, etat, m, fiche(m, QUAI, "Moored", 0.0, t - timedelta(minutes=2), last="MACAS", atd=vieux_atd), t)
+    assert s["statut"] == "berthed"
+    assert store._q("select departure_at from escales", un=True)["departure_at"] is None
+    atd = t + timedelta(minutes=30)
+    t += timedelta(minutes=90)
+    s = suivre(cfg, store, etat, m, fiche(m, 34.5, "Underway using Engine", 13, t, last="MACAS", atd=atd), t)
+    assert s["statut"] == "departed"
+    assert store._q("select departure_at from escales", un=True)["departure_at"] == atd

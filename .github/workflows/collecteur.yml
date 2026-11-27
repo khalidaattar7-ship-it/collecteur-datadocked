@@ -39,9 +39,11 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      # Code de sortie 2 = arrêt de sûreté (solde illisible, débit anormal, base injoignable) :
-      # le job échoue, visible dans l'onglet Actions. Un plafond atteint n'est PAS un échec :
-      # il est écrit dans le résumé de la passe.
+      # Codes de sortie (un échec déclenche l'e-mail de GitHub) :
+      #   2 = arrêt de sûreté (solde illisible, débit anormal, base injoignable) ;
+      #   3 = BLOCAGE « solde » ou « mois » (collecte arrêtée ; décision du 27/11/2026) ;
+      #   4 = rappel d'expiration de l'abonnement à J-3 et J-1 (une passe en échec par jour).
+      # Les plafonds « jour » et « session » ne sont PAS des échecs : écrits dans le résumé de la passe.
       - name: Passe du collecteur
         env:
           DATADOCKED_API_KEY: ${{ secrets.DATADOCKED_API_KEY }}
@@ -55,6 +57,9 @@ jobs:
           # dans (solde − réserve) ; sous la réserve, LINER seuls au niveau le plus large.
           COLLECTOR_RESERVE_SOLDE: ${{ vars.COLLECTOR_RESERVE_SOLDE || '1000' }}
           COLLECTOR_JOUR_RENOUVELLEMENT: ${{ vars.COLLECTOR_JOUR_RENOUVELLEMENT || '18' }}
+          # Expiration CONNUE de l'abonnement Data Docked (rappel J-3 / J-1). Activation constatée le
+          # 18/11/2026 21:08:17 UTC (credits_journal) + 1 mois, à confirmer sur le compte. « aucune » pour couper.
+          COLLECTOR_EXPIRATION_ABONNEMENT: ${{ vars.COLLECTOR_EXPIRATION_ABONNEMENT || '2026-12-18T21:08:17Z' }}
           # Fin du suivi in-port non-LINER (flux B). « aucune » pour le relancer.
           COLLECTOR_FIN_FLUX_B: ${{ vars.COLLECTOR_FIN_FLUX_B || '2026-12-02T00:00:00Z' }}
         run: |

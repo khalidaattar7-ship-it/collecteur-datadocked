@@ -65,6 +65,10 @@ class Plafonds:
     # d'abonnement ne se reportent pas : sans cette contrainte, la collecte s'arrête net à zéro.
     reserve_solde: int = field(default_factory=lambda: _env_int("COLLECTOR_RESERVE_SOLDE", 1_000))
     jour_renouvellement: int = field(default_factory=lambda: _env_int("COLLECTOR_JOUR_RENOUVELLEMENT", 18))
+    # Date d'expiration CONNUE de l'abonnement (ISO 8601 avec fuseau ; vide ou « aucune » = pas de rappel) :
+    # rappel en échec à J-3 et J-1 (alertes.py, décision du 27/11/2026).
+    expiration_abonnement: Optional[datetime] = field(
+        default_factory=lambda: _env_date("COLLECTOR_EXPIRATION_ABONNEMENT"))
 
 
 # Échelle de DÉGRADATION PRIORISÉE, du plus fin au plus large :
