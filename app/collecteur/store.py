@@ -302,7 +302,8 @@ class Store:
             select e.escale_id, v.categorie, e.anchorage_entry_at, e.berth_entry_at, e.berth_exit_at,
                    e.departure_at, e.statut
             from escales e left join vessels v using (mmsi)
-            where e.anchorage_entry_at is not null or e.berth_entry_at is not null
+            where (e.anchorage_entry_at is not null or e.berth_entry_at is not null)
+              and e.statut <> 'doublon'   -- escale rouverte à tort (ex. 262 = 136, 27/11/2026) : jamais comptée deux fois
         """, tous=True)
 
     def ecrire_congestion(self, slot, rade, rade_liner, a_quai, n_total, qualite, version) -> None:
